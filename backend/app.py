@@ -5,14 +5,10 @@ import pandas as pd
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import werkzeug.utils
-import requests
-import json
 import gc
 
 # --- KHỞI TẠO ỨNG DỤNG FLASK ---
 app = Flask(__name__)
-
-# Tăng giới hạn kích thước tệp tải lên lên 500MB để xử lý các file dữ liệu lớn
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 
 CORS(app)
 
@@ -22,7 +18,6 @@ if not os.path.exists(UPLOAD_FOLDER):
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # --- LOGIC TỐI ƯU HÓA (GIỮ NGUYÊN) ---
-# Hằng số và logic cốt lõi của việc tối ưu hóa không thay đổi.
 MAX_CONTAINER_WEIGHT = 24000
 MAX_CONTAINER_BOXES = 20.0
 EPSILON = 1e-6
@@ -130,40 +125,23 @@ def upload_file():
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
     
-    if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls') or file.filename.endswith('.csv')):
+    if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
         try:
             filename = werkzeug.utils.secure_filename(file.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
 
-            # Với file lớn, chỉ lấy tên sheet từ file excel, không đọc toàn bộ file
-            if file.filename.endswith(('.xlsx', '.xls')):
-                xls = pd.ExcelFile(filepath)
-                sheets = xls.sheet_names
-                return jsonify({
-                    "success": True,
-                    "filepath": filepath,
-                    "sheets": sheets,
-                    "file_type": "excel"
-                })
-            else: # .csv file
-                return jsonify({
-                    "success": True,
-                    "filepath": filepath,
-                    "sheets": ["CSV Data"], # CSV chỉ có 1 "sheet"
-                    "file_type": "csv"
-                })
-
-        except Exception as e:
+            xls = pd.ExcelFile(filepath)
+            sheets = xls.sheet_names
             return jsonify({
-                "success": False,
-                "error": f"Lỗi xử lý file: {str(e)}"
-            }), 500
+                "success": True,
+                "filepath": filepath,
+                "sheets": sheets
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Lỗi xử lý file Excel: {str(e)}"}), 500
     
-    return jsonify({
-        "success": False,
-        "error": "Định dạng file không được hỗ trợ. Vui lòng tải lên file .xlsx, .xls hoặc .csv"
-    }), 400
+    return jsonify({"success": False, "error": "Định dạng file không được hỗ trợ. Vui lòng chỉ tải lên file .xlsx hoặc .xls"}), 400
 
 @app.route('/api/process', methods=['POST'])
 def process_data():
@@ -171,89 +149,45 @@ def process_data():
         data = request.get_json()
         filepath = data.get('filepath')
         sheet_name = data.get('sheetName')
-        quantity_col = data.get('quantityCol')
-        weight_col = data.get('weightCol')
-        filter_col = data.get('filterCol')
-        filter_val = data.get('filterVal')
-        header_row = int(data.get('headerRow', 3))
-        file_type = data.get('file_type', 'excel')
 
-        if not all([filepath, quantity_col, weight_col]):
-             return jsonify({
-                 "success": False,
-                 "error": "Thiếu các trường thông tin bắt buộc"
-             }), 400
-
-        # *** TỐI ƯU HÓA: Đọc file theo từng phần (chunk) để tiết kiệm bộ nhớ ***
-        chunk_size = 10000  # Xử lý 10,000 dòng mỗi lần
-        boxes_data = []
+        # Đây là phiên bản chỉ cần filepath và sheetName. Lỗi của bạn là do chạy phiên bản cũ hơn.
+        if not all([filepath, sheet_name]):
+            return jsonify({"success": False, "error": "Thiếu thông tin file hoặc tên sheet."}), 400
         
-        # Khởi tạo reader tương ứng với loại file
-        if file_type == 'excel':
-            if not sheet_name:
-                return jsonify({"success": False, "error": "Vui lòng chọn sheet để xử lý."}), 400
-            reader = pd.read_excel(
-                filepath, 
-                sheet_name=sheet_name, 
-                header=header_row,
-                engine='openpyxl',
-                chunksize=chunk_size
-            )
-        else: # 'csv'
-            reader = pd.read_csv(
-                filepath, 
-                header=header_row, 
-                chunksize=chunk_size,
-                on_bad_lines='skip' # Bỏ qua các dòng bị lỗi nếu có
-            )
+        # Các cột được xác định cứng dựa trên file mẫu của bạn
+        QUANTITY_COL = 'Unnamed: 11'
+        WEIGHT_PER_PALLET_COL = 'Tổng\nK.lg/kiện\n(GW/pallet)'
+        HEADER_ROW = 3 
 
-        # Lặp qua từng chunk để xử lý
-        for chunk in reader:
-            # Áp dụng bộ lọc nếu có
-            if filter_col and filter_val:
-                try:
-                    if filter_col in chunk.columns:
-                        if chunk[filter_col].dtype == 'object':
-                            chunk = chunk[chunk[filter_col].astype(str) == str(filter_val)]
-                        else:
-                            numeric_filter_val = pd.to_numeric(filter_val, errors='coerce')
-                            if not pd.isna(numeric_filter_val):
-                                chunk[filter_col] = pd.to_numeric(chunk[filter_col], errors='coerce')
-                                chunk = chunk[chunk[filter_col] == numeric_filter_val]
-                except Exception as e:
-                    print(f"Filter error on chunk: {e}") # Ghi log lỗi filter nhưng vẫn tiếp tục
+        df = pd.read_excel(filepath, sheet_name=sheet_name, header=HEADER_ROW)
 
-            # Kiểm tra sự tồn tại của cột trong chunk
-            if quantity_col not in chunk.columns or weight_col not in chunk.columns:
-                 return jsonify({
-                    "success": False,
-                    "error": f"Cột '{quantity_col}' hoặc '{weight_col}' không tồn tại."
-                }), 400
-
-            # Làm sạch dữ liệu trong chunk
-            chunk[quantity_col] = pd.to_numeric(chunk[quantity_col], errors='coerce')
-            chunk[weight_col] = pd.to_numeric(chunk[weight_col], errors='coerce')
-            
-            # Loại bỏ các dòng có giá trị không hợp lệ (NaN) hoặc <= 0
-            chunk.dropna(subset=[quantity_col, weight_col], inplace=True)
-            chunk = chunk[(chunk[quantity_col] > 0) & (chunk[weight_col] > 0)]
-
-            # Thêm dữ liệu đã xử lý từ chunk vào danh sách tổng
-            if not chunk.empty:
-                boxes_data.extend(list(zip(chunk[quantity_col], chunk[weight_col])))
-
-        if not boxes_data:
+        if QUANTITY_COL not in df.columns or WEIGHT_PER_PALLET_COL not in df.columns:
             return jsonify({
                 "success": False,
-                "error": "Không tìm thấy dữ liệu hợp lệ sau khi đọc và lọc file."
+                "error": f"Các cột bắt buộc ('Số lượng pallet' và 'Khối lượng/pallet') không được tìm thấy trong sheet '{sheet_name}'. Vui lòng kiểm tra lại cấu trúc file Excel."
             }), 400
+
+        df_filtered = df.copy()
         
-        # Gọi hàm tối ưu hóa với danh sách dữ liệu đầy đủ
+        df_filtered[QUANTITY_COL] = pd.to_numeric(df_filtered[QUANTITY_COL], errors='coerce')
+        df_filtered[WEIGHT_PER_PALLET_COL] = pd.to_numeric(df_filtered[WEIGHT_PER_PALLET_COL], errors='coerce')
+
+        df_filtered.dropna(subset=[QUANTITY_COL, WEIGHT_PER_PALLET_COL], inplace=True)
+        df_filtered = df_filtered[(df_filtered[QUANTITY_COL] > 0) & (df_filtered[WEIGHT_PER_PALLET_COL] > 0)]
+
+        if df_filtered.empty:
+            return jsonify({
+                "success": False,
+                "error": "Không tìm thấy dữ liệu hợp lệ (số lượng > 0 và khối lượng > 0) trong sheet đã chọn."
+            }), 400
+
+        boxes_data = list(zip(
+            df_filtered[QUANTITY_COL],
+            (df_filtered[QUANTITY_COL] * df_filtered[WEIGHT_PER_PALLET_COL])
+        ))
+
         result = optimize_packing_prioritized(boxes_data)
         
-        # Giải phóng bộ nhớ
-        del reader
-        del boxes_data
         gc.collect()
         
         return jsonify({
@@ -262,63 +196,10 @@ def process_data():
         })
     except Exception as e:
         print(f"Error in /api/process: {e}", file=sys.stderr)
-        return jsonify({
-            "success": False,
-            "error": f"Đã xảy ra lỗi không mong muốn: {str(e)}"
-        }), 500
-
-# --- TÍNH NĂNG MỚI: GEMINI API (GIỮ NGUYÊN) ---
-def create_report_prompt(results_data):
-    prompt = "Bạn là một điều phối viên logistics chuyên nghiệp. Dựa trên dữ liệu xếp container sau đây, hãy viết một báo cáo vận chuyển bằng tiếng Việt.\n\n"
-    prompt += "Yêu cầu báo cáo:\n"
-    prompt += "1.  **Tóm tắt tổng quan:** Nêu rõ tổng số container, tổng trọng lượng hàng, và hiệu suất sử dụng (tính trung bình % trọng lượng đã lấp đầy so với 24000kg).\n"
-    prompt += "2.  **Chi tiết từng container:** Liệt kê các container, trọng lượng, số pallet, và hiệu suất lấp đầy của từng container. Nhắc đến có bao nhiêu pallet đơn và pallet kết hợp.\n"
-    prompt += "3.  **Lưu ý & Đề xuất:** Đưa ra các cảnh báo nếu có (ví dụ: container gần quá tải) và các đề xuất để việc bốc dỡ hiệu quả.\n\n"
-    prompt += "Dữ liệu:\n"
-    prompt += f"```json\n{json.dumps(results_data, indent=2)}\n```\n\n"
-    prompt += "Vui lòng trình bày báo cáo một cách chuyên nghiệp, rõ ràng và dễ hiểu."
-    return prompt
-
-@app.route('/api/generate-report', methods=['POST'])
-def generate_report():
-    try:
-        optimization_results = request.get_json()
-        if not optimization_results:
-            return jsonify({"error": "No optimization data provided"}), 400
-
-        prompt = create_report_prompt(optimization_results)
-        
-        # Lấy API Key từ biến môi trường để bảo mật hơn
-        api_key = os.environ.get("GEMINI_API_KEY") 
-        if not api_key:
-            return jsonify({"error": "API key for Gemini is not configured on the server."}), 500
-
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
-        headers = {'Content-Type': 'application/json'}
-        payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
-
-        response = requests.post(api_url, headers=headers, data=json.dumps(payload))
-        response.raise_for_status() 
-
-        result_json = response.json()
-        
-        if (result_json.get('candidates') and 
-            result_json['candidates'][0].get('content') and 
-            result_json['candidates'][0]['content'].get('parts')):
-            
-            generated_text = result_json['candidates'][0]['content']['parts'][0]['text']
-            return jsonify({"report": generated_text})
-        else:
-            return jsonify({"error": "Failed to generate report from API. The response was empty.", "details": result_json}), 500
-
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"API request failed: {e}"}), 500
-    except Exception as e:
-        print(f"Error in /api/generate-report: {e}", file=sys.stderr)
-        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+        return jsonify({"success": False, "error": f"Đã xảy ra lỗi không mong muốn khi xử lý dữ liệu: {str(e)}"}), 500
 
 # --- CHẠY ỨNG DỤNG ---
 if __name__ == '__main__':
-    # Chạy trên port 5001 và cho phép truy cập từ mọi địa chỉ IP trong mạng
-    # Sử dụng `threaded=True` để xử lý nhiều yêu cầu tốt hơn
-    app.run(host='0.0.0.0', port=5001, debug=True, threaded=True)
+    from waitress import serve
+    print("Starting server with Waitress on http://0.0.0.0:5001")
+    serve(app, host='0.0.0.0', port=5001, threads=8)
