@@ -178,9 +178,9 @@ def create_combined_pallets(float_pallets):
 
 def pack_and_split_pallets(containers, all_remaining_pallets):
     """
-    Giai đoạn 3 & 4: Xếp và Tách tất cả các pallet còn lại (gộp, lẻ).
-    Đây là hàm cốt lõi, thay thế cho cả pack_pallets_into_existing_containers và split_and_fill cũ.
-    Nó luôn ưu tiên tách pallet để lấp đầy khoảng trống.
+    Giai đoạn 3 & 4: Xếp và Tách tất cả các pallet còn lại.
+    LOGIC CUỐI CÙNG: Khi tách một pallet lẻ, tìm cách tách sao cho PHẦN CÒN LẠI là số nguyên
+    và phần bị tách ra lấp đầy khoảng trống một cách hiệu quả nhất.
     """
     pallets_to_pack = sorted(all_remaining_pallets, key=lambda p: p.quantity, reverse=True)
     unpacked_pallets = []
@@ -189,7 +189,6 @@ def pack_and_split_pallets(containers, all_remaining_pallets):
         pallet = pallets_to_pack.pop(0)
         placed_or_split = False
 
-        # Sắp xếp container: ưu tiên 1 là CÙNG CÔNG TY, ưu tiên 2 là container còn ÍT chỗ trống nhất
         def sort_key(c):
             is_same_company = (c.main_company == pallet.company)
             return (not is_same_company, c.remaining_quantity)
@@ -200,28 +199,48 @@ def pack_and_split_pallets(containers, all_remaining_pallets):
             gap_qty = c.remaining_quantity
             if gap_qty < EPSILON: continue
 
-            # LOGIC QUAN TRỌNG: LUÔN KIỂM TRA TÁCH PALLET TRƯỚC
-            # Nếu pallet lớn hơn khoảng trống, hãy tách nó ra
+            # Chỉ xem xét tách nếu pallet lớn hơn khoảng trống
             if pallet.quantity > gap_qty:
-                # Lượng có thể tách phải vừa với trọng lượng còn lại
-                max_qty_by_weight = c.remaining_weight / pallet.weight_per_pallet if pallet.weight_per_pallet > EPSILON else float('inf')
-                qty_to_split = min(gap_qty, max_qty_by_weight)
                 
-                if qty_to_split > EPSILON:
-                    remaining_part, new_part = pallet.split(qty_to_split)
+                # <<< LOGIC TÁCH THÔNG MINH BẬC CAO >>>
+                best_qty_to_split = 0
+
+                # Duyệt qua tất cả các khả năng để lại một số nguyên (từ 0 đến floor(pallet.quantity))
+                # Ví dụ: pallet 6.7 -> các khả năng còn lại là 6.0, 5.0, 4.0, ...
+                for possible_remainder in range(math.floor(pallet.quantity), -1, -1):
+                    qty_to_split_candidate = pallet.quantity - possible_remainder
+                    
+                    # Nếu ứng viên này lớn hơn khoảng trống, nó không hợp lệ, bỏ qua
+                    if qty_to_split_candidate > gap_qty + EPSILON:
+                        continue
+                    
+                    # Kiểm tra trọng lượng của ứng viên
+                    weight_of_candidate = qty_to_split_candidate * pallet.weight_per_pallet
+                    if weight_of_candidate <= c.remaining_weight + EPSILON:
+                        # Chúng ta đã tìm thấy một cách tách hợp lệ.
+                        # Vì vòng lặp đi từ remainder lớn nhất -> nhỏ nhất,
+                        # nên ứng viên hợp lệ đầu tiên sẽ là ứng viên có qty_to_split nhỏ nhất.
+                        # Chúng ta muốn cái lớn nhất để lấp đầy, nên ta sẽ tiếp tục tìm.
+                        # Cập nhật ứng viên tốt nhất.
+                        if qty_to_split_candidate > best_qty_to_split:
+                            best_qty_to_split = qty_to_split_candidate
+
+                # Nếu đã tìm thấy một cách tách phù hợp
+                if best_qty_to_split > EPSILON:
+                    remaining_part, new_part = pallet.split(best_qty_to_split)
                     if new_part:
                         c.add_pallet(new_part)
-                        # Đưa phần còn lại vào danh sách chờ và sắp xếp lại
                         pallets_to_pack.append(remaining_part)
                         pallets_to_pack.sort(key=lambda p: p.quantity, reverse=True)
                         placed_or_split = True
-                        break # Đã xử lý, chuyển sang pallet tiếp theo
-            
-            # Nếu không thể tách (hoặc pallet nhỏ hơn khoảng trống), thử xếp cả pallet
+                        break 
+                # <<< KẾT THÚC LOGIC TÁCH MỚI >>>
+
+            # Nếu không thể tách (hoặc pallet nhỏ hơn/bằng khoảng trống), thử xếp cả pallet
             elif c.can_fit(pallet):
                 c.add_pallet(pallet)
                 placed_or_split = True
-                break # Đã xử lý, chuyển sang pallet tiếp theo
+                break
 
         if not placed_or_split:
             unpacked_pallets.append(pallet)
