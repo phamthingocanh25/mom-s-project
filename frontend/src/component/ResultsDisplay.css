@@ -114,3 +114,7 @@
 .combined-pallet li {
   color: #42526e;
 }
+.container-card ul li.cross-shipped {
+  color: #d9534f; /* Màu đỏ để cảnh báo */
+  font-weight: bold;
+}
