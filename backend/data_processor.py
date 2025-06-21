@@ -56,3 +56,57 @@ def load_and_prepare_pallets(filepath, sheet_name):
         
     except Exception as e:
         return None, f"Lỗi xử lý file Excel: {e}"
+
+def generate_response_data(final_containers):
+    """
+    Chuyển đổi kết quả tối ưu hóa thành định dạng JSON để gửi về frontend.
+    Khi một pallet được gộp, nó sẽ bao gồm danh sách các pallet gốc.
+    """
+    results = {
+        "total_containers": len(final_containers),
+        "containers": []
+    }
+
+    for container in sorted(final_containers, key=lambda c: int(c.id.split('_')[-1])):
+        container_details = {
+            "id": container.id,
+            "main_company": container.main_company,
+            "total_quantity": f"{container.total_quantity:.2f}",
+            "total_weight": f"{container.total_weight:.2f}",
+            "pallets": []
+        }
+        for pallet in container.pallets:
+            pallet_details = {
+                "id": pallet.id,
+                "product_code": pallet.product_code,
+                "product_name": pallet.product_name,
+                "company": pallet.company,
+                "quantity": f"{pallet.quantity:.2f}",
+                "total_weight": f"{pallet.total_weight:.2f}",
+                "is_combined": pallet.is_combined,
+                "is_split": pallet.is_split,
+                "is_cross_ship": pallet.is_cross_ship,
+                # Thêm một trường mới để chứa các pallet gốc
+                "original_pallets": []
+            }
+
+            # *** LOGIC MỚI: Nếu pallet là hàng gộp, thêm chi tiết các pallet con ***
+            if pallet.is_combined:
+                # Đặt tên cho pallet gộp để dễ nhận biết hơn
+                pallet_details["product_name"] = "Hàng gộp" 
+                
+                for p_orig in pallet.original_pallets:
+                    original_pallet_info = {
+                        "id": p_orig.id,
+                        "product_code": p_orig.product_code,
+                        "product_name": p_orig.product_name,
+                        "company": p_orig.company,
+                        "quantity": f"{p_orig.quantity:.2f}",
+                        "total_weight": f"{p_orig.total_weight:.2f}",
+                    }
+                    pallet_details["original_pallets"].append(original_pallet_info)
+
+            container_details["pallets"].append(pallet_details)
+        results["containers"].append(container_details)
+    
+    return results

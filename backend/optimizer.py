@@ -1,6 +1,5 @@
 # backend/optimizer.py
 import math
-import pandas as pd
 
 # --- HẰNG SỐ CẤU HÌNH ---
 MAX_WEIGHT = 24000.0
@@ -13,9 +12,8 @@ class Pallet:
     """Đại diện cho một pallet hoặc một phần của pallet."""
     def __init__(self, p_id, product_code, product_name, company, quantity, weight_per_pallet):
         self.id = p_id
-        # Đảm bảo mã sản phẩm và tên sản phẩm không bao giờ là null
-        self.product_code = str(product_code) if pd.notna(product_code) else 'Không có mã'
-        self.product_name = str(product_name) if pd.notna(product_name) else 'Không có tên'
+        self.product_code = product_code
+        self.product_name = product_name
         self.company = str(company)
         self.quantity = float(quantity)
         self.weight_per_pallet = float(weight_per_pallet)
@@ -26,7 +24,6 @@ class Pallet:
         self.is_cross_ship = False
 
     def __repr__(self):
-        # (Hàm này không thay đổi)
         type_info = ""
         if self.is_combined: type_info = " [Combined]"
         if self.is_split: type_info = " [Split]"
@@ -42,19 +39,12 @@ class Pallet:
         if split_quantity <= EPSILON or split_quantity >= self.quantity:
             return None, None
 
-        # --- SỬA LỖI: Đảm bảo pallet con giữ lại thuộc tính của pallet cha ---
+        # Tạo phần mới được tách ra
         new_part_id = f"{self.id}-part"
-        new_part = Pallet(
-            new_part_id, self.product_code, self.product_name, self.company,
-            split_quantity, self.weight_per_pallet
-        )
+        new_part = Pallet(new_part_id, self.product_code, self.product_name, self.company,
+                          split_quantity, self.weight_per_pallet)
         new_part.is_split = True
         
-        # Nếu pallet cha là hàng gộp, pallet con cũng là hàng gộp
-        if self.is_combined:
-            new_part.is_combined = True
-            new_part.original_pallets = self.original_pallets
-
         # Cập nhật phần còn lại của pallet gốc
         self.quantity -= split_quantity
         self.total_weight = self.quantity * self.weight_per_pallet
@@ -93,20 +83,17 @@ class Container:
     def remaining_weight(self):
         return MAX_WEIGHT - self.total_weight
 
-# --- CÁC HÀM LOGIC TỐI ƯU HÓA ĐÃ ĐƯỢC TÁI CẤU TRÚC ---
+# --- CÁC HÀM LOGIC TỐI ƯU HÓA (GIỮ NGUYÊN) ---
 
-def pack_integer_pallets(all_integer_pallets):
+def pack_integer_pallets(all_integer_pallets, container_id_counter, existing_containers=None):
     """
     Giai đoạn 1: Chỉ xếp các pallet nguyên (số lượng là số nguyên).
     Tạo container mới khi cần. Luôn xếp các pallet lớn nhất trước.
     """
-    containers = []
-    container_id_counter = 1
+    containers = existing_containers if existing_containers is not None else []
     
-    # Sắp xếp pallet nguyên từ lớn nhất đến nhỏ nhất
     for p in sorted(all_integer_pallets, key=lambda x: x.quantity, reverse=True):
         placed = False
-        # Tìm container phù hợp (cùng công ty, vừa vặn nhất - best fit)
         best_fit_container = None
         min_remaining_space = float('inf')
 
@@ -121,15 +108,13 @@ def pack_integer_pallets(all_integer_pallets):
             placed = True
 
         if not placed:
-            # Nếu không có container phù hợp, tạo container mới cho công ty của pallet này
             new_container = Container(f"Container_{container_id_counter}", p.company)
             container_id_counter += 1
             if new_container.can_fit(p):
                 new_container.add_pallet(p)
                 containers.append(new_container)
             else:
-                # Trường hợp pallet quá lớn ngay cả cho container rỗng (xử lý sau)
-                pass # Sẽ được đưa vào danh sách chưa xếp
+                pass 
     
     return containers, container_id_counter
 
@@ -141,7 +126,6 @@ def create_combined_pallets(float_pallets):
     combined_pallets = []
     uncombined_singles = []
     
-    # Nhóm các pallet lẻ theo công ty
     pallets_by_company = {}
     for p in float_pallets:
         if p.company not in pallets_by_company:
@@ -149,27 +133,23 @@ def create_combined_pallets(float_pallets):
         pallets_by_company[p.company].append(p)
 
     for company, Cty_pallets in pallets_by_company.items():
-        # Sắp xếp pallet lẻ từ lớn nhất đến nhỏ nhất để làm "nền"
         pallets_to_combine = sorted(Cty_pallets, key=lambda x: x.quantity, reverse=True)
         
         while pallets_to_combine:
             start_pallet = pallets_to_combine.pop(0)
-            # Giới hạn gộp là phần nguyên của pallet + 0.95 để khuyến khích gộp thành số gần tròn
             limit = math.floor(start_pallet.quantity) + 0.95
             
             current_combination = [start_pallet]
             current_sum = start_pallet.quantity
             
-            # Tìm các mảnh nhỏ để gộp vào
             temp_remaining = list(pallets_to_combine)
-            for other_pallet in sorted(temp_remaining, key=lambda x: x.quantity): # Ưu tiên gộp mảnh nhỏ nhất
+            for other_pallet in sorted(temp_remaining, key=lambda x: x.quantity):
                 if current_sum + other_pallet.quantity <= limit:
                     current_combination.append(other_pallet)
                     current_sum += other_pallet.quantity
                     pallets_to_combine.remove(other_pallet)
             
             if len(current_combination) > 1:
-                # Tạo pallet gộp mới
                 new_id = "+".join([p.id for p in current_combination])
                 total_qty = sum(p.quantity for p in current_combination)
                 total_wgt = sum(p.total_weight for p in current_combination)
@@ -180,7 +160,6 @@ def create_combined_pallets(float_pallets):
                 combined_p.original_pallets = current_combination
                 combined_pallets.append(combined_p)
             else:
-                # Nếu không thể gộp, trả lại thành pallet lẻ đơn
                 uncombined_singles.append(start_pallet)
 
     return combined_pallets, uncombined_singles
@@ -188,9 +167,7 @@ def create_combined_pallets(float_pallets):
 
 def pack_and_split_pallets(containers, all_remaining_pallets):
     """
-    Giai đoạn 3 & 4: Xếp và Tách tất cả các pallet còn lại.
-    LOGIC CUỐI CÙNG: Khi tách một pallet lẻ, tìm cách tách sao cho PHẦN CÒN LẠI là số nguyên
-    và phần bị tách ra lấp đầy khoảng trống một cách hiệu quả nhất.
+    Giai đoạn 3 & 4: Xếp và Tách tất cả các pallet còn lại vào các container CÙNG CÔNG TY.
     """
     pallets_to_pack = sorted(all_remaining_pallets, key=lambda p: p.quantity, reverse=True)
     unpacked_pallets = []
@@ -199,43 +176,25 @@ def pack_and_split_pallets(containers, all_remaining_pallets):
         pallet = pallets_to_pack.pop(0)
         placed_or_split = False
 
-        def sort_key(c):
-            is_same_company = (c.main_company == pallet.company)
-            return (not is_same_company, c.remaining_quantity)
-        
-        for c in sorted(containers, key=sort_key):
+        # Chỉ tìm trong các container cùng công ty
+        for c in sorted([c for c in containers if c.main_company == pallet.company], key=lambda c: c.remaining_quantity):
             if placed_or_split: break
             
             gap_qty = c.remaining_quantity
             if gap_qty < EPSILON: continue
 
-            # Chỉ xem xét tách nếu pallet lớn hơn khoảng trống
             if pallet.quantity > gap_qty:
-                
-                # <<< LOGIC TÁCH THÔNG MINH BẬC CAO >>>
                 best_qty_to_split = 0
-
-                # Duyệt qua tất cả các khả năng để lại một số nguyên (từ 0 đến floor(pallet.quantity))
-                # Ví dụ: pallet 6.7 -> các khả năng còn lại là 6.0, 5.0, 4.0, ...
                 for possible_remainder in range(math.floor(pallet.quantity), -1, -1):
                     qty_to_split_candidate = pallet.quantity - possible_remainder
                     
-                    # Nếu ứng viên này lớn hơn khoảng trống, nó không hợp lệ, bỏ qua
-                    if qty_to_split_candidate > gap_qty + EPSILON:
-                        continue
+                    if qty_to_split_candidate > gap_qty + EPSILON: continue
                     
-                    # Kiểm tra trọng lượng của ứng viên
                     weight_of_candidate = qty_to_split_candidate * pallet.weight_per_pallet
                     if weight_of_candidate <= c.remaining_weight + EPSILON:
-                        # Chúng ta đã tìm thấy một cách tách hợp lệ.
-                        # Vì vòng lặp đi từ remainder lớn nhất -> nhỏ nhất,
-                        # nên ứng viên hợp lệ đầu tiên sẽ là ứng viên có qty_to_split nhỏ nhất.
-                        # Chúng ta muốn cái lớn nhất để lấp đầy, nên ta sẽ tiếp tục tìm.
-                        # Cập nhật ứng viên tốt nhất.
                         if qty_to_split_candidate > best_qty_to_split:
                             best_qty_to_split = qty_to_split_candidate
 
-                # Nếu đã tìm thấy một cách tách phù hợp
                 if best_qty_to_split > EPSILON:
                     remaining_part, new_part = pallet.split(best_qty_to_split)
                     if new_part:
@@ -244,9 +203,7 @@ def pack_and_split_pallets(containers, all_remaining_pallets):
                         pallets_to_pack.sort(key=lambda p: p.quantity, reverse=True)
                         placed_or_split = True
                         break 
-                # <<< KẾT THÚC LOGIC TÁCH MỚI >>>
-
-            # Nếu không thể tách (hoặc pallet nhỏ hơn/bằng khoảng trống), thử xếp cả pallet
+            
             elif c.can_fit(pallet):
                 c.add_pallet(pallet)
                 placed_or_split = True
@@ -258,61 +215,128 @@ def pack_and_split_pallets(containers, all_remaining_pallets):
     return containers, unpacked_pallets
 
 
-def pack_final_leftovers(containers, leftovers, container_id_counter):
+# --- HÀM MỚI ---
+def cross_ship_leftovers(all_containers, all_leftovers, container_id_counter):
     """
-    Giai đoạn cuối: Xử lý triệt để những pallet còn sót lại.
-    Nếu không thể xếp vào container có sẵn, sẽ tạo container mới.
-    Hàm này đảm bảo không pallet nào bị bỏ sót.
+    Giai đoạn 5: Xử lý hàng thừa xuyên công ty (Cross-shipping).
+    Cố gắng xếp các pallet còn sót lại từ tất cả các công ty vào các container hiện có.
+    Nếu không được, đóng gói chúng vào các container mới một cách hiệu quả.
     """
-    for p in sorted(leftovers, key=lambda x: x.quantity, reverse=True):
-        # Thử lại lần cuối để xếp vào container có sẵn (giống logic Giai đoạn 3)
-        containers, still_leftover = pack_and_split_pallets(containers, [p])
-        
-        # Nếu vẫn còn sót, tạo container mới cho nó
-        if still_leftover:
-            p_left = still_leftover[0]
-            new_container = Container(f"Container_{container_id_counter}", p_left.company)
-            container_id_counter += 1
-            # Vì pallet này không vừa ở đâu cả, nó sẽ được đặt vào container mới
-            # (Có thể cần tách nếu nó lớn hơn 20 pallets)
-            while p_left.quantity > EPSILON:
-                if p_left.quantity > MAX_PALLETS:
-                    remaining, part_to_add = p_left.split(MAX_PALLETS)
-                    new_container.add_pallet(part_to_add)
-                    containers.append(new_container)
-                    # Tạo cont mới cho phần còn lại
-                    p_left = remaining
-                    new_container = Container(f"Container_{container_id_counter}", p_left.company)
-                    container_id_counter += 1
-                else:
-                    new_container.add_pallet(p_left)
-                    containers.append(new_container)
-                    break
+    # Sắp xếp pallet thừa từ lớn nhất đến nhỏ nhất
+    pallets_to_pack = sorted(all_leftovers, key=lambda p: p.quantity, reverse=True)
+    still_unpacked = []
 
-    return containers
+    # Vòng 1: Cố gắng lấp đầy các container hiện có (không phân biệt công ty)
+    while pallets_to_pack:
+        pallet = pallets_to_pack.pop(0)
+        placed_or_split = False
+
+        # Ưu tiên lấp đầy các container gần đầy nhất trước (best-fit)
+        for c in sorted(all_containers, key=lambda c: c.remaining_quantity):
+            if placed_or_split: break
+
+            gap_qty = c.remaining_quantity
+            if gap_qty < EPSILON: continue
+            
+            if c.can_fit(pallet):
+                c.add_pallet(pallet)
+                placed_or_split = True
+                break
+            elif pallet.quantity > gap_qty: # Logic tách pallet
+                best_qty_to_split = 0
+                for possible_remainder in range(math.floor(pallet.quantity), -1, -1):
+                    qty_to_split_candidate = pallet.quantity - possible_remainder
+                    if qty_to_split_candidate > gap_qty + EPSILON: continue
+                    weight_of_candidate = qty_to_split_candidate * pallet.weight_per_pallet
+                    if weight_of_candidate <= c.remaining_weight + EPSILON and qty_to_split_candidate > best_qty_to_split:
+                        best_qty_to_split = qty_to_split_candidate
+                
+                if best_qty_to_split > EPSILON:
+                    remaining_part, new_part = pallet.split(best_qty_to_split)
+                    if new_part:
+                        c.add_pallet(new_part)
+                        pallets_to_pack.append(remaining_part)
+                        pallets_to_pack.sort(key=lambda p: p.quantity, reverse=True)
+                        placed_or_split = True
+                        break
+        
+        if not placed_or_split:
+            still_unpacked.append(pallet)
+
+    # Vòng 2: Logic mới để xử lý các pallet cuối cùng không thể ghép
+    # Đóng gói chúng vào các container mới một cách hiệu quả thay vì mỗi pallet một container.
+    final_leftovers = sorted(still_unpacked, key=lambda p: p.quantity, reverse=True)
+    while final_leftovers:
+        # Bắt đầu một container mới với pallet lớn nhất còn lại
+        pallet_to_start_new_container = final_leftovers.pop(0)
+        
+        new_container = Container(f"Container_{container_id_counter}", pallet_to_start_new_container.company)
+        container_id_counter += 1
+        new_container.add_pallet(pallet_to_start_new_container)
+        all_containers.append(new_container)
+
+        # Cố gắng lấp đầy container vừa tạo bằng các pallet còn lại (First-Fit)
+        remaining_after_fill = []
+        for other_pallet in final_leftovers:
+            if new_container.can_fit(other_pallet):
+                new_container.add_pallet(other_pallet)
+            else:
+                remaining_after_fill.append(other_pallet)
+        
+        # Cập nhật danh sách pallet còn lại cho vòng lặp tiếp theo
+        final_leftovers = sorted(remaining_after_fill, key=lambda p: p.quantity, reverse=True)
+
+    return all_containers
+
 
 # --- HÀM TỐI ƯU HÓA CHÍNH (LUỒNG ĐIỀU PHỐI MỚI) ---
 def optimize_container_packing(all_pallets):
-    """Hàm chính điều phối toàn bộ quy trình tối ưu hóa đã được tái cấu trúc."""
+    """
+    Hàm chính điều phối toàn bộ quy trình tối ưu hóa.
+    Tách biệt luồng xử lý cho từng công ty, sau đó ghép hàng thừa.
+    """
     
-    # Phân loại pallet
-    integer_pallets = [p for p in all_pallets if abs(p.quantity - round(p.quantity)) < EPSILON]
-    for p in integer_pallets: p.quantity = round(p.quantity) # Làm tròn để đảm bảo là số nguyên
-    float_pallets = [p for p in all_pallets if abs(p.quantity - round(p.quantity)) >= EPSILON]
+    # 1. Tách pallet theo công ty
+    pallets_by_company = {}
+    for p in all_pallets:
+        company_key = str(p.company)
+        if company_key not in pallets_by_company:
+            pallets_by_company[company_key] = []
+        pallets_by_company[company_key].append(p)
 
-    # Giai đoạn 1: Xếp tất cả các pallet nguyên chất.
-    containers, container_id_counter = pack_integer_pallets(integer_pallets)
+    all_optimized_containers = []
+    all_leftover_pallets = []
+    container_id_counter = 1
 
-    # Giai đoạn 2: Gộp các pallet lẻ.
-    combined_pallets, single_floats = create_combined_pallets(float_pallets)
-    
-    # Giai đoạn 3 & 4: Xếp tất cả các pallet còn lại (hàng gộp và hàng lẻ)
-    # Hàm này sẽ tự động ưu tiên tách pallet để lấp đầy, giải quyết vấn đề cốt lõi.
-    all_remaining = combined_pallets + single_floats
-    containers, leftovers = pack_and_split_pallets(containers, all_remaining)
+    # 2. Chạy tối ưu hóa độc lập cho từng công ty
+    sorted_companies = sorted(pallets_by_company.keys()) # Xử lý theo thứ tự alphabet để kết quả ổn định
 
-    # Giai đoạn cuối: Xử lý những pallet còn sót lại, đảm bảo không pallet nào bị mất.
-    if leftovers:
-        containers = pack_final_leftovers(containers, leftovers, container_id_counter)
+    for company in sorted_companies:
+        company_pallets = pallets_by_company[company]
+        
+        # Phân loại pallet cho công ty hiện tại
+        integer_pallets = [p for p in company_pallets if abs(p.quantity - round(p.quantity)) < EPSILON]
+        for p in integer_pallets: p.quantity = round(p.quantity)
+        float_pallets = [p for p in company_pallets if abs(p.quantity - round(p.quantity)) >= EPSILON]
 
-    return containers
+        # Giai đoạn 1: Xếp pallet nguyên
+        company_containers, temp_counter = pack_integer_pallets(integer_pallets, container_id_counter)
+        container_id_counter = temp_counter
+        
+        # Giai đoạn 2: Gộp pallet lẻ
+        combined_pallets, single_floats = create_combined_pallets(float_pallets)
+        
+        # Giai đoạn 3 & 4: Xếp và tách các pallet còn lại
+        all_remaining = combined_pallets + single_floats
+        company_containers, leftovers = pack_and_split_pallets(company_containers, all_remaining)
+        
+        # Thu thập kết quả
+        all_optimized_containers.extend(company_containers)
+        all_leftover_pallets.extend(leftovers)
+
+    # 3. Giai đoạn cuối: Xử lý hàng thừa xuyên công ty (Cross-Shipping)
+    if all_leftover_pallets:
+        final_containers = cross_ship_leftovers(all_optimized_containers, all_leftover_pallets, container_id_counter)
+        return final_containers
+
+    return all_optimized_containers

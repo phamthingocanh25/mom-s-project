@@ -1,146 +1,145 @@
 .results-container {
-  background-color: #fff;
-  border-radius: 8px;
-  padding: 2rem;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
+    padding: 20px;
+    background-color: #f9f9f9;
+    border-radius: 8px;
+    margin-top: 20px;
 }
 
-.results-title {
-  text-align: center;
-  font-size: 1.8rem;
-  margin-bottom: 0.5rem;
-  color: var(--text-color);
-}
-
-.results-summary {
-  text-align: center;
-  font-size: 1.1rem;
-  color: #6b778c;
-  margin-bottom: 2rem;
+.summary {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: #333;
+    margin-bottom: 20px;
 }
 
 .containers-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-  gap: 1.5rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    gap: 20px;
 }
 
 .container-card {
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
+    background-color: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 15px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    display: flex;
+    flex-direction: column;
 }
 
 .container-header {
-  background-color: var(--primary-color);
-  color: white;
-  padding: 0.8rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid #f0f0f0;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
 }
 
 .container-header h3 {
-  margin: 0;
-  font-size: 1.2rem;
+    margin: 0;
+    color: #0056b3;
 }
 
-.container-stats {
-  padding: 1rem;
-  background-color: #fafbfc;
-  border-bottom: 1px solid var(--border-color);
+.main-company-tag {
+    background-color: #e7f3ff;
+    color: #0056b3;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    font-weight: bold;
 }
 
-.stat-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.9rem;
+.container-summary {
+    display: flex;
+    justify-content: space-around;
+    text-align: center;
+    margin-bottom: 15px;
 }
 
-.stat-item:not(:last-child) {
-  margin-bottom: 0.5rem;
+.container-summary p {
+    margin: 0;
+    color: #555;
+    font-size: 0.9em;
 }
 
-.stat-item span {
-  color: #42526e;
+.container-summary span {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: #333;
 }
 
-.container-content {
-  padding: 1rem;
-  flex-grow: 1;
+.pallet-details h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
 }
 
-.container-content h4 {
-  margin-top: 0;
-  margin-bottom: 1rem;
-  font-size: 1rem;
-  color: var(--text-color);
+.pallet-item {
+    border-top: 1px solid #f0f0f0;
+    padding-top: 10px;
+    margin-top: 10px;
 }
 
-.content-item:not(:last-child) {
-  margin-bottom: 1rem;
+.pallet-item p {
+    margin: 4px 0;
+    font-size: 0.95em;
 }
 
-.pallet-info {
-  font-size: 0.9rem;
-  padding: 0.75rem;
-  border-radius: 4px;
+.tag-container {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
-.pallet-info strong {
-  display: block;
-  margin-bottom: 0.25rem;
+.tag {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    font-weight: bold;
 }
 
-.single-pallet {
-  background-color: #e6fcff;
-  border-left: 4px solid #00c7e6;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.split-tag {
+    background-color: #fff0f0;
+    color: #d9534f;
+    border: 1px solid #d9534f;
 }
 
-.combined-pallet {
-  background-color: #e9e7fd;
-  border-left: 4px solid #6554c0;
+.cross-ship-tag {
+    background-color: #f0f9ff;
+    color: #5bc0de;
+    border: 1px solid #5bc0de;
 }
 
-.combined-pallet ul {
-  list-style-type: none;
-  padding-left: 1rem;
-  margin: 0.5rem 0 0 0;
+/* --- CSS MỚI CHO HÀNG GỘP --- */
+.combined-pallet-group .combined-title {
+    font-weight: bold;
+    color: #8a2be2; /* Màu tím để phân biệt */
 }
 
-.combined-pallet li {
-  color: #42526e;
-}
-.container-card ul {
-  list-style-type: none;
-  padding: 0;
-  margin: 0;
-}
-
-.container-card ul li {
-  background-color: #f8f9fa;
-  padding: 8px 12px;
-  border-radius: 4px;
-  margin-bottom: 6px;
-  border-left: 3px solid #0052cc; /* Màu mặc định */
+.constituent-pallets {
+    padding-left: 15px;
+    border-left: 3px solid #e6e6fa;
+    margin-top: 8px;
+    margin-left: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.container-card ul li.cross-shipped {
-  background-color: #fff4e5; /* Màu nền vàng nhạt cho hàng ghép */
-  border-left-color: #ff991f; /* Màu viền cam cho hàng ghép */
-  color: #594300;
-  font-weight: 500;
+.constituent-pallet {
+    font-size: 0.9em;
 }
 
-.error-message {
-  color: var(--error-color);
-  background-color: #ffebe6;
-  border: 1px solid var(--error-color);
-  border-radius: 6px;
-  padding: 1rem;
-  text-align: center;
-  margin-top: 1rem;
+.constituent-pallet p {
+    margin: 0;
+}
+
+.constituent-pallet .constituent-details {
+    color: #666;
+    font-size: 0.95em;
+    padding-left: 10px;
 }
