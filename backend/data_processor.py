@@ -25,8 +25,14 @@ def load_and_prepare_pallets(filepath, sheet_name):
             names=column_names
         )
 
-        # Xóa các hàng không có dữ liệu cần thiết
+        # Xóa các hàng không có dữ liệu cần thiết ở các cột quan trọng
         df.dropna(subset=['product_name', 'company', 'weight_per_pallet', 'quantity'], how='any', inplace=True)
+        
+        # --- SỬA LỖI: Điền các giá trị bị thiếu (NaN) bằng một chuỗi mặc định ---
+        # Điều này đảm bảo mọi pallet đều có mã và tên hợp lệ.
+        df['product_code'].fillna('Không có mã', inplace=True)
+        df['product_name'].fillna('Không có tên', inplace=True)
+        # --- KẾT THÚC SỬA LỖI ---
 
         # Chuyển đổi sang kiểu số, loại bỏ các giá trị không hợp lệ
         for col in ['weight_per_pallet', 'quantity']:
@@ -42,7 +48,7 @@ def load_and_prepare_pallets(filepath, sheet_name):
         if df.empty:
             return None, "Không tìm thấy dữ liệu hợp lệ trong các cột đã chỉ định (B, C, D, K, L)."
 
-        # Tạo danh sách các đối tượng Pallet
+        # Tạo danh sách các đối tượng Pallet, đảm bảo không có giá trị null
         pallets = [Pallet(f"P{i}", r['product_code'], r['product_name'], r['company'], r['quantity'], r['weight_per_pallet'])
                    for i, r in df.iterrows()]
         

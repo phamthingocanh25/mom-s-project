@@ -1,5 +1,6 @@
 # backend/optimizer.py
 import math
+import pandas as pd
 
 # --- HẰNG SỐ CẤU HÌNH ---
 MAX_WEIGHT = 24000.0
@@ -12,8 +13,9 @@ class Pallet:
     """Đại diện cho một pallet hoặc một phần của pallet."""
     def __init__(self, p_id, product_code, product_name, company, quantity, weight_per_pallet):
         self.id = p_id
-        self.product_code = product_code
-        self.product_name = product_name
+        # Đảm bảo mã sản phẩm và tên sản phẩm không bao giờ là null
+        self.product_code = str(product_code) if pd.notna(product_code) else 'Không có mã'
+        self.product_name = str(product_name) if pd.notna(product_name) else 'Không có tên'
         self.company = str(company)
         self.quantity = float(quantity)
         self.weight_per_pallet = float(weight_per_pallet)
@@ -24,6 +26,7 @@ class Pallet:
         self.is_cross_ship = False
 
     def __repr__(self):
+        # (Hàm này không thay đổi)
         type_info = ""
         if self.is_combined: type_info = " [Combined]"
         if self.is_split: type_info = " [Split]"
@@ -39,12 +42,19 @@ class Pallet:
         if split_quantity <= EPSILON or split_quantity >= self.quantity:
             return None, None
 
-        # Tạo phần mới được tách ra
+        # --- SỬA LỖI: Đảm bảo pallet con giữ lại thuộc tính của pallet cha ---
         new_part_id = f"{self.id}-part"
-        new_part = Pallet(new_part_id, self.product_code, self.product_name, self.company,
-                          split_quantity, self.weight_per_pallet)
+        new_part = Pallet(
+            new_part_id, self.product_code, self.product_name, self.company,
+            split_quantity, self.weight_per_pallet
+        )
         new_part.is_split = True
         
+        # Nếu pallet cha là hàng gộp, pallet con cũng là hàng gộp
+        if self.is_combined:
+            new_part.is_combined = True
+            new_part.original_pallets = self.original_pallets
+
         # Cập nhật phần còn lại của pallet gốc
         self.quantity -= split_quantity
         self.total_weight = self.quantity * self.weight_per_pallet
