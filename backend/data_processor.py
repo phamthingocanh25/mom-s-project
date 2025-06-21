@@ -2,228 +2,333 @@ import pandas as pd
 import math
 import copy
 
-# --- CÁC HẰNG SỐ CẤU HÌNH ---
-MAX_CONTAINER_WEIGHT_KG = 24000
-MAX_CONTAINER_QUANTITY = 20.0 # Giả định giới hạn 20 pallets
+# --- HẰNG SỐ CẤU HÌNH ---
+MAX_WEIGHT = 24000.0
+MAX_PALLETS = 20.0
+
+# --- CÁC LỚP ĐỐI TƯỢNG ---
 
 class Pallet:
-    """Lớp đối tượng cho một pallet hoặc một phần của pallet."""
-    def __init__(self, p_id, quantity, weight_kg, company_id, original_quantity=None):
+    """Đại diện cho một pallet hoặc một phần của pallet."""
+    def __init__(self, p_id,product_code, product_name, company, quantity, weight_per_pallet):
         self.id = p_id
-        self.quantity = quantity
-        self.weight_kg = weight_kg
-        self.company_id = company_id
-        # Lưu lại số lượng gốc nếu pallet này đã bị chia nhỏ
-        self.original_quantity = original_quantity if original_quantity else quantity
+        self.product_code = product_code
+        self.product_name = product_name
+        self.company = company
+        self.quantity = float(quantity)
+        self.weight_per_pallet = float(weight_per_pallet)
+        self.total_weight = self.quantity * self.weight_per_pallet
+        self.is_combined = False
+        self.original_pallets = [self]
 
     def __repr__(self):
-        return (f"Pallet(id={self.id}, qty={self.quantity:.2f}, "
-                f"wgt={self.weight_kg:.2f}, Cty={self.company_id})")
-
-    def split(self, required_quantity):
-        """Chia pallet hiện tại thành hai phần."""
-        if self.quantity <= required_quantity:
-            return None, None
-
-        weight_per_pallet = self.weight_kg / self.quantity
-        
-        # Phần được tách ra
-        part1 = Pallet(self.id, required_quantity, required_quantity * weight_per_pallet, 
-                       self.company_id, self.original_quantity)
-        
-        # Phần còn lại
-        self.quantity -= required_quantity
-        self.weight_kg -= part1.weight_kg
-        
-        return part1, self
+        return f"Pallet(id={self.id},code={self.product_code}, qty={self.quantity:.2f}, wgt={self.total_weight:.2f}, Cty={self.company})"
 
 class Container:
-    """Lớp đối tượng đại diện cho một container."""
-    def __init__(self, container_id, company_id):
+    """Đại diện cho một container."""
+    def __init__(self, container_id, main_company):
         self.id = container_id
+        self.main_company = main_company
         self.pallets = []
-        self.company_id = company_id # Công ty "chủ" của container
         self.total_quantity = 0.0
-        self.total_weight_kg = 0.0
-
-    def add_pallet(self, pallet):
-        self.pallets.append(pallet)
-        self.total_quantity += pallet.quantity
-        self.total_weight_kg += pallet.weight_kg
+        self.total_weight = 0.0
 
     def can_fit(self, pallet):
-        return (self.total_quantity + pallet.quantity <= MAX_CONTAINER_QUANTITY and
-                self.total_weight_kg + pallet.weight_kg <= MAX_CONTAINER_WEIGHT_KG)
+        """Kiểm tra xem pallet có thể được thêm vào container không."""
+        return (self.total_quantity + pallet.quantity <= MAX_PALLETS and
+                self.total_weight + pallet.total_weight <= MAX_WEIGHT)
 
-    def fullness_score(self):
-        # Trả về điểm "đầy" của container, dùng để sắp xếp
-        return (self.total_weight_kg / MAX_CONTAINER_WEIGHT_KG) + \
-               (self.total_quantity / MAX_CONTAINER_QUANTITY)
+    def add_pallet(self, pallet):
+        """Thêm pallet vào container."""
+        self.pallets.append(pallet)
+        self.total_quantity += pallet.quantity
+        self.total_weight += pallet.total_weight
+
+    @property
+    def remaining_quantity(self):
+        return MAX_PALLETS - self.total_quantity
+
+    @property
+    def remaining_weight(self):
+        return MAX_WEIGHT - self.total_weight
+
+# --- CÁC HÀM TIỆN ÍCH ---
+
+def format_number(num):
+    """Định dạng số theo kiểu Đức."""
+    if pd.isna(num): return "N/A"
+    return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def read_and_validate_data(filepath, sheet_name):
+    """
+    Đọc và làm sạch dữ liệu từ file Excel bằng vị trí cột cố định.
+    - Cột B (1): product_code
+    - Cột C (2): product_name
+    - Cột D (3): company
+    - Cột K (10): weight_per_pallet
+    - Cột L (11): quantity
+    """
+    try:
+        # Định nghĩa vị trí cột (chỉ số bắt đầu từ 0) và tên cột chúng ta muốn sử dụng
+        # B=1, C=2, D=3, K=10, L=11
+        column_indices = [1, 2, 3, 10, 11]
+        column_names = ['product_code', 'product_name', 'company', 'weight_per_pallet', 'quantity']
+
+        # Đọc file Excel:
+        # - header=None: Chúng ta không sử dụng dòng tiêu đề từ file.
+        # - skiprows=5: Bỏ qua 5 dòng đầu tiên (giả định dữ liệu bắt đầu từ dòng 6).
+        #              (Tương đương với header=4 trong code cũ).
+        # - usecols: Chỉ đọc các cột được chỉ định theo vị trí.
+        # - names: Gán tên cột mới cho dữ liệu đã đọc.
+        df = pd.read_excel(
+            filepath,
+            sheet_name=sheet_name,
+            header=None,
+            skiprows=5,
+            usecols=column_indices,
+            names=column_names
+        )
+
+        # Từ đây, phần còn lại của hàm có thể giữ nguyên vì chúng ta đã tạo ra
+        # một DataFrame với các tên cột chuẩn ('product_name', 'company', v.v.)
+
+        # Bỏ các hàng không có dữ liệu ở các cột thiết yếu
+        df.dropna(subset=['product_name', 'company', 'weight_per_pallet', 'quantity'], how='any', inplace=True)
+
+        # Chuyển đổi các cột số, nếu lỗi thì biến thành NaN
+        for col in ['weight_per_pallet', 'quantity']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Loại bỏ các hàng có lỗi chuyển đổi số
+        df.dropna(subset=['weight_per_pallet', 'quantity'], inplace=True)
+
+        # Lọc bỏ các pallet có số lượng <= 0
+        df = df[df['quantity'] > 0].copy()
+        df['company'] = df['company'].astype(int)
+
+        if df.empty:
+            return None, "Không tìm thấy dữ liệu hợp lệ tại các vị trí cột đã chỉ định (B, C, D, K, L)."
+
+        # Tạo danh sách các đối tượng Pallet
+        pallets = [Pallet(f"P{i}",r['product_code'], r['product_name'], r['company'], r['quantity'], r['weight_per_pallet'])
+                   for i, r in df.iterrows()]
+        return pallets, None
+    except Exception as e:
+        return None, f"Lỗi xử lý file Excel: {e}"
 
 
-# --- LÕI TOÁN MỚI ---
+# --- LOGIC TỐI ƯU HÓA MỚI ---
 
-def pack_pallets_basic(pallets, company_id):
-    """Gói hàng cơ bản cho một công ty, không chia nhỏ."""
-    containers = []
-    # Sắp xếp pallet từ lớn nhất đến nhỏ nhất
+def pack_integer_pallets(containers, integer_pallets):
+    """
+    Bước 1: Xếp các pallet số nguyên.
+    Sắp xếp từ lớn đến bé, ưu tiên xếp vào container cùng công ty.
+    Nếu không vừa, tạo container mới.
+    """
+    for p in sorted(integer_pallets, key=lambda x: x.quantity, reverse=True):
+        placed = False
+        # Ưu tiên container cùng công ty và còn đủ chỗ
+        for c in sorted(containers, key=lambda x: x.main_company == p.company, reverse=True):
+            if c.can_fit(p):
+                c.add_pallet(p)
+                placed = True
+                break
+        
+        if not placed:
+            # Tạo container mới nếu không tìm được chỗ
+            new_container = Container(f"Container_{len(containers) + 1}", p.company)
+            new_container.add_pallet(p)
+            containers.append(new_container)
+    return containers
+
+def create_combined_pallets(float_pallets):
+    """
+    Bước 2: Gộp các pallet lẻ theo quy tắc "x.9".
+    "Thử từ số pallet float nhỏ nhất gộp lại với nhau"
+    """
+    combined_pallets = []
+    pallets_to_combine = sorted(float_pallets, key=lambda x: x.quantity)
+    
+    while pallets_to_combine:
+        start_pallet = pallets_to_combine.pop(0)
+        limit = math.floor(start_pallet.quantity) + 0.9
+        
+        current_combination = [start_pallet]
+        current_sum = start_pallet.quantity
+        
+        # Tạo bản sao để duyệt và xóa phần tử
+        remaining_for_this_combo = list(pallets_to_combine)
+        for other_pallet in remaining_for_this_combo:
+            if current_sum + other_pallet.quantity <= limit:
+                current_combination.append(other_pallet)
+                current_sum += other_pallet.quantity
+                pallets_to_combine.remove(other_pallet)
+
+        if len(current_combination) > 1:
+            new_id = "+".join([p.id for p in current_combination])
+            total_qty = sum(p.quantity for p in current_combination)
+            total_wgt = sum(p.total_weight for p in current_combination)
+            
+            # Khối lượng/pallet cho pallet gộp
+            wgt_per_pallet = total_wgt / total_qty if total_qty > 0 else 0
+            
+            combined_p = Pallet(new_id,"HÀNG GỘP", "Hàng gộp", current_combination[0].company, total_qty, wgt_per_pallet)
+            combined_p.is_combined = True
+            combined_p.original_pallets = current_combination
+            combined_pallets.append(combined_p)
+        else:
+            # Nếu không gộp được, trả lại danh sách
+            combined_pallets.append(start_pallet)
+
+    final_pallets = [p for p in combined_pallets if p.is_combined]
+    remaining_singles = [p for p in combined_pallets if not p.is_combined]
+    return final_pallets, remaining_singles
+
+def pack_pallets_into_existing_containers(containers, pallets):
+    """Hàm chung để xếp các pallet (không chia nhỏ) vào các container hiện có."""
+    unpacked_pallets = []
+    # Sắp xếp pallet cần xếp từ lớn đến bé
     for p in sorted(pallets, key=lambda x: x.quantity, reverse=True):
         placed = False
-        for c in containers:
+
+        # Sắp xếp container: ưu tiên cùng công ty, sau đó ưu tiên cont còn ít chỗ nhất (Best-Fit)
+        # --- ĐÂY LÀ DÒNG ĐÃ ĐƯỢC SỬA LỖI ---
+        # Logic: Sắp xếp theo 2 tiêu chí:
+        # 1. Ưu tiên container cùng công ty (c.main_company == p.company) lên trước.
+        #    Giá trị này là True (1) hoặc False (0). Lấy số âm để xếp giảm dần (True=-1 đứng trước False=0).
+        # 2. Nếu cùng tiêu chí 1, xếp theo chỗ trống còn lại tăng dần (còn ít chỗ nhất được ưu tiên).
+        sorted_containers = sorted(
+            containers,
+            key=lambda c: (-(c.main_company == p.company), c.remaining_quantity)
+        )
+        # --- KẾT THÚC PHẦN SỬA LỖI ---
+
+        for c in sorted_containers:
             if c.can_fit(p):
                 c.add_pallet(p)
                 placed = True
                 break
         if not placed:
-            new_cont = Container(f"C{company_id}-{len(containers)+1}", company_id)
+            unpacked_pallets.append(p)
+    return containers, unpacked_pallets
+
+def split_and_fill(containers, leftover_floats):
+    """
+    Bước 4: Chia nhỏ các pallet lẻ còn lại để lấp đầy các container.
+    "lấp đầy container thừa nhiều chỗ nhất"
+    """
+    # Sắp xếp pallet lẻ từ lớn đến bé
+    pallets_to_split = sorted(leftover_floats, key=lambda p: p.quantity, reverse=True)
+    
+    for p in pallets_to_split:
+        # Sắp xếp container theo chỗ trống còn lại, từ nhiều đến ít
+        sorted_containers = sorted(containers, key=lambda c: c.remaining_quantity, reverse=True)
+        
+        for c in sorted_containers:
+            if p.quantity <= 0.01: break # Pallet đã được chia hết
+            if c.remaining_quantity > 0.01:
+                
+                # Tính toán lượng có thể lấp vào
+                qty_by_space = c.remaining_quantity
+                qty_by_weight = c.remaining_weight / p.weight_per_pallet if p.weight_per_pallet > 0 else float('inf')
+                
+                amount_to_pack = min(p.quantity, qty_by_space, qty_by_weight)
+                
+                if amount_to_pack > 0.01:
+                    # Tạo phần pallet bị chia nhỏ
+                    split_part = Pallet(f"{p.id}-split", p.product_code, p.product_name, p.company, amount_to_pack, p.weight_per_pallet)
+                    c.add_pallet(split_part)
+                    
+                    # Cập nhật pallet gốc
+                    p.quantity -= amount_to_pack
+                    p.total_weight = p.quantity * p.weight_per_pallet
+        
+        # Nếu sau khi chia nhỏ vẫn còn, phải tạo cont mới
+        if p.quantity > 0.01:
+            new_cont = Container(f"Container_{len(containers) + 1}", p.company)
             new_cont.add_pallet(p)
             containers.append(new_cont)
+            
     return containers
 
-def optimize_shipping_with_cost(pallets_c1, pallets_c2):
-    """Thuật toán tối ưu hóa chính, có xem xét chi phí vận chuyển chéo."""
+def format_results_new(containers):
+    """
+    Định dạng kết quả cuối cùng thành một cấu trúc JSON chi tiết cho frontend.
+    """
+    final_results = []
+    # Sắp xếp container theo ID để có thứ tự ổn định
+    for i, c in enumerate(sorted(containers, key=lambda c: c.id)):
+        container_contents = []
+        for p in c.pallets:
+            pallet_data = {
+                "is_cross_ship": p.company != c.main_company,
+                "company": p.company,
+                "quantity": p.quantity,
+                "total_weight": p.total_weight
+            }
+
+            if p.is_combined:
+                pallet_data["type"] = "CombinedPallet"
+                pallet_data["items"] = []
+                # Lấy thông tin chi tiết từ các pallet gốc đã được gộp
+                for sub_p in p.original_pallets:
+                    pallet_data["items"].append({
+                        "product_code": sub_p.product_code,
+                        "product_name": sub_p.product_name,
+                        "quantity": sub_p.quantity,
+                        "total_weight": sub_p.total_weight,
+                    })
+            else:
+                pallet_data["type"] = "SinglePallet"
+                pallet_data["is_split"] = "split" in p.id
+                pallet_data["product_code"] = p.product_code
+                pallet_data["product_name"] = p.product_name
+
+            container_contents.append(pallet_data)
+
+        final_results.append({
+            'id': c.id,
+            'main_company': c.main_company,
+            'total_quantity': c.total_quantity,
+            'total_weight': c.total_weight,
+            'contents': sorted(container_contents, key=lambda x: x['type']) # Nhóm pallet gộp/đơn lại với nhau
+        })
+    # Trả về cấu trúc mà App.js mong đợi
+    return {"success": True, "results": final_results}
+
+def process_uploaded_file(filepath, sheet_name):
+    """Hàm chính điều phối toàn bộ quy trình tối ưu hóa."""
+    all_pallets, error = read_and_validate_data(filepath, sheet_name)
+    if error:
+        return {"error": error}
+
+    # --- Phân tách pallet ---
+    integer_pallets = [p for p in all_pallets if p.quantity == int(p.quantity)]
+    float_pallets = [p for p in all_pallets if p.quantity != int(p.quantity)]
+
+    # --- Bước 1: Xếp pallet số nguyên ---
+    containers = pack_integer_pallets([], integer_pallets)
+
+    # --- Bước 2: Tạo và xếp các pallet gộp ---
+    # Tách các pallet lẻ theo công ty để gộp riêng
+    float_c1 = [p for p in float_pallets if p.company == 1]
+    float_c2 = [p for p in float_pallets if p.company == 2]
     
-    # 1. Gói hàng riêng cho từng công ty
-    containers_c1 = pack_pallets_basic(pallets_c1, 1)
-    containers_c2 = pack_pallets_basic(pallets_c2, 2)
-    all_containers = containers_c1 + containers_c2
+    combined_c1, remaining_c1 = create_combined_pallets(float_c1)
+    combined_c2, remaining_c2 = create_combined_pallets(float_c2)
     
-    # Lặp lại quá trình tối ưu hóa một vài lần
-    for _ in range(5):
-        if len(all_containers) <= 1:
-            break
+    all_combined = combined_c1 + combined_c2
+    all_remaining_floats = remaining_c1 + remaining_c2
 
-        # Sắp xếp để đưa container ít đầy nhất lên đầu
-        all_containers.sort(key=lambda c: c.fullness_score())
-        
-        source_cont = all_containers[0]
-        target_conts = all_containers[1:]
-        
-        pallets_to_repack = list(source_cont.pallets)
-        source_cont.pallets.clear()
-        
-        # Cố gắng xếp lại các pallet vào các container hiện có
-        for pallet in sorted(pallets_to_repack, key=lambda p: p.quantity, reverse=True):
-            placed = False
-            # Ưu tiên xếp vào cont CÙNG công ty trước
-            for target in sorted(target_conts, key=lambda c: c.company_id == pallet.company_id, reverse=True):
-                if target.can_fit(pallet):
-                    target.add_pallet(pallet)
-                    placed = True
-                    break
-            
-            # Nếu không thể xếp nguyên vẹn, thử chia nhỏ (với chi phí thấp nhất)
-            if not placed:
-                best_split_option = None
-                
-                for target in target_conts:
-                    if target.fullness_score() > 1.8: # Không chia nhỏ cho cont đã gần đầy
-                        continue
+    # Xếp các pallet đã gộp vào
+    containers, unpacked_combined = pack_pallets_into_existing_containers(containers, all_combined)
+    all_remaining_floats.extend(unpacked_combined) # Nếu có pallet gộp không vừa, coi nó như pallet lẻ
 
-                    needed_qty = MAX_CONTAINER_QUANTITY - target.total_quantity
-                    needed_wgt = MAX_CONTAINER_WEIGHT_KG - target.total_weight_kg
-                    
-                    if needed_qty <= 0 or needed_wgt <= 0: continue
+    # --- Bước 3: Xếp các pallet lẻ còn lại (không chia) ---
+    containers, leftover_floats = pack_pallets_into_existing_containers(containers, all_remaining_floats)
 
-                    weight_per_pallet = pallet.weight_kg / pallet.quantity if pallet.quantity > 0 else 0
-                    fittable_qty = min(needed_qty, needed_wgt / weight_per_pallet if weight_per_pallet > 0 else needed_qty)
-                    
-                    if fittable_qty >= pallet.quantity: continue
+    # --- Bước 4: Chia nhỏ pallet lẻ để lấp đầy ---
+    containers = split_and_fill(containers, leftover_floats)
 
-                    # Chi phí là lượng hàng phải di chuyển chéo
-                    cost = fittable_qty if target.company_id != pallet.company_id else 0
-                    
-                    if fittable_qty > 0.1 and (best_split_option is None or cost < best_split_option['cost']):
-                        best_split_option = {'target': target, 'quantity': fittable_qty, 'cost': cost, 'original_pallet': pallet}
-
-                if best_split_option:
-                    part1, _ = best_split_option['original_pallet'].split(best_split_option['quantity'])
-                    best_split_option['target'].add_pallet(part1)
-                    # Pallet gốc (phần còn lại) sẽ được xử lý tiếp
-                
-        # Loại bỏ các container rỗng
-        all_containers = [c for c in all_containers if c.pallets]
-
-    return all_containers
-
-# --- PHẦN XỬ LÝ FILE VÀ ĐỊNH DẠNG KẾT QUẢ ---
-
-def process_uploaded_file(file_path, sheet_name):
-    try:
-        df = load_and_clean_data(file_path, sheet_name)
-        if isinstance(df, dict): # Nếu load_and_clean_data trả về lỗi
-            return df
-            
-        pallets_c1 = [Pallet(f"P{i}", r['SoLuongPallet'], r['SoLuongPallet'] * r['TrongLuongPerPallet_kg'], 1)
-                      for i, r in df[df['CongTy'] == 1].iterrows()]
-        pallets_c2 = [Pallet(f"P{i}", r['SoLuongPallet'], r['SoLuongPallet'] * r['TrongLuongPerPallet_kg'], 2)
-                      for i, r in df[df['CongTy'] == 2].iterrows()]
-
-        final_containers = optimize_shipping_with_cost(pallets_c1, pallets_c2)
-        
-        return format_results(final_containers)
-
-    except Exception as e:
-        return {"error": f"Lỗi không xác định: {e}"}
-
-def load_and_clean_data(file_path, sheet_name):
-    df_full = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
-    start_row_index = find_data_start_row(df_full, [10, 11])
-    if start_row_index is None:
-        return {"error": "Không thể tự động xác định dòng bắt đầu của dữ liệu."}
-
-    df = df_full[start_row_index:].copy()
-    df.reset_index(drop=True, inplace=True)
-    df.rename(columns={3: 'CongTy', 10: 'TrongLuongPerPallet_kg', 11: 'SoLuongPallet'}, inplace=True)
-    
-    df['SoLuongPallet'] = pd.to_numeric(df['SoLuongPallet'], errors='coerce')
-    df['TrongLuongPerPallet_kg'] = pd.to_numeric(df['TrongLuongPerPallet_kg'], errors='coerce')
-    df.dropna(subset=['SoLuongPallet', 'TrongLuongPerPallet_kg', 'CongTy'], inplace=True)
-    df = df[(df['SoLuongPallet'] > 0) & (df['TrongLuongPerPallet_kg'] > 0)]
-    
-    if df.empty:
-        return {"error": "Không tìm thấy dữ liệu hợp lệ (số lượng > 0, trọng lượng > 0 và có mã công ty)."}
-    return df
-
-def find_data_start_row(df, columns_to_check):
-    for index, row in df.iterrows():
-        try:
-            pd.to_numeric(row[columns_to_check])
-            return index
-        except (ValueError, TypeError):
-            continue
-    return None
-
-def format_results(containers):
-    output = []
-    for i, c in enumerate(sorted(containers, key=lambda x: x.fullness_score(), reverse=True)):
-        cont_data = {
-            "id": f"Container #{i + 1}",
-            "total_weight": c.total_weight_kg,
-            "total_quantity": c.total_quantity,
-            "pallets": []
-        }
-        # Đánh dấu công ty "chủ" của container
-        main_company_load = sum(p.weight_kg for p in c.pallets if p.company_id == c.company_id)
-        if (c.total_weight_kg > 0 and main_company_load / c.total_weight_kg < 0.5):
-             main_company_id = c.pallets[0].company_id if c.pallets else c.company_id
-        else:
-             main_company_id = c.company_id
-        cont_data["main_company"] = main_company_id
-
-
-        for p in sorted(c.pallets, key=lambda x: x.weight_kg, reverse=True):
-            pallet_info = f"{p.quantity:.2f} plls ({p.weight_kg:.2f} kg) - từ Cty {int(p.company_id)}"
-            
-            # Ghi chú rõ nếu là hàng vận chuyển chéo
-            if int(p.company_id) != main_company_id:
-                pallet_info += " [HÀNG GHÉP]"
-
-            # Ghi chú nếu là hàng bị tách
-            if abs(p.quantity - p.original_quantity) > 0.01:
-                 pallet_info += f" (tách từ {p.original_quantity:.2f} plls)"
-
-            cont_data["pallets"].append(pallet_info)
-        output.append(cont_data)
-    
-    return {"results": output}
+    # --- Trả kết quả ---
+    return format_results_new(containers)

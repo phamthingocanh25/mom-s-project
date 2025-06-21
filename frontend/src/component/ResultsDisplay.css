@@ -114,7 +114,33 @@
 .combined-pallet li {
   color: #42526e;
 }
+.container-card ul {
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+}
+
+.container-card ul li {
+  background-color: #f8f9fa;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  border-left: 3px solid #0052cc; /* Màu mặc định */
+}
+
 .container-card ul li.cross-shipped {
-  color: #d9534f; /* Màu đỏ để cảnh báo */
-  font-weight: bold;
+  background-color: #fff4e5; /* Màu nền vàng nhạt cho hàng ghép */
+  border-left-color: #ff991f; /* Màu viền cam cho hàng ghép */
+  color: #594300;
+  font-weight: 500;
+}
+
+.error-message {
+  color: var(--error-color);
+  background-color: #ffebe6;
+  border: 1px solid var(--error-color);
+  border-radius: 6px;
+  padding: 1rem;
+  text-align: center;
+  margin-top: 1rem;
 }

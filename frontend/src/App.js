@@ -1,9 +1,18 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
+// Giả lập API_URL để code có thể chạy trong môi trường preview
 const API_URL = 'http://localhost:5001';
 
-// --- STYLES COMPONENT ---
+// --- BIỂU TƯỢỢNG (ICONS) ---
+// Các component SVG cho biểu tượng để giao diện thêm trực quan.
+const IconBox = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>;
+const IconCollection = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>;
+const IconSplit = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v5"/><path d="M12 17v5"/><path d="M5.4 7.8 2 12l3.4 4.2"/><path d="M18.6 7.8 22 12l-3.4 4.2"/><line x1="2" y1="12" x2="22" y2="12"/></svg>;
+const IconTruck = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17h4V5H2v12h3"/><path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5"/><path d="M14 17H9"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="16.5" cy="17.5" r="2.5"/></svg>;
+
+
+// --- STYLES COMPONENT (ĐÃ CẬP NHẬT) ---
 const GlobalStyles = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700&display=swap');
@@ -11,13 +20,17 @@ const GlobalStyles = () => (
       --primary-color: #0052cc; --secondary-color: #f4f5f7; --text-color: #172b4d;
       --background-color: #f4f5f7; --card-background: #ffffff; --border-color: #dfe1e6;
       --error-color: #de350b; --success-color: #00875a; --font-family: 'Be Vietnam Pro', sans-serif;
+      --single-pallet-color: #00b8d9; --single-pallet-bg: #e6fcff;
+      --combined-pallet-color: #6554c0; --combined-pallet-bg: #e9e7fd;
+      --split-tag-color: #bf2600; --split-tag-bg: #ffebe6;
+      --cross-ship-tag-color: #ff8b00; --cross-ship-tag-bg: #fff4e6;
     }
     body {
       margin: 0; font-family: var(--font-family); background-color: var(--background-color);
       color: var(--text-color); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
     }
     .App { display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh; }
-    .container { width: 100%; max-width: 800px; }
+    .container { width: 100%; max-width: 900px; }
     .card {
       background-color: var(--card-background); border-radius: 8px; padding: 2rem 2.5rem;
       box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); border: 1px solid var(--border-color);
@@ -49,63 +62,167 @@ const GlobalStyles = () => (
     button.secondary:hover:not(:disabled) { background-color: #dfe1e6; }
     .back-button { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 1rem; padding: 0.5rem 0; margin-bottom: 1rem; width: auto; text-align: left; }
     .error-message { color: var(--error-color); background-color: #ffebe6; border: 1px solid var(--error-color); border-radius: 6px; padding: 1rem; text-align: center; margin-top: 1rem; }
-    .results-container { background-color: #fff; border-radius: 8px; padding: 2rem; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05); }
+    
+    /* --- Styles for Results (NEW) --- */
+    .results-container { background-color: var(--card-background); border-radius: 8px; padding: 2rem; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }
     .results-title { text-align: center; font-size: 1.8rem; margin-bottom: 0.5rem; color: var(--text-color); }
     .results-summary { text-align: center; font-size: 1.1rem; color: #6b778c; margin-bottom: 2rem; }
-    .containers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 1.5rem; }
-    .container-card { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
-    .container-header { background-color: var(--primary-color); color: white; padding: 0.8rem 1rem; }
+    .containers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 1.5rem; }
+    .container-card { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; background-color: #fafbfc; }
+    .container-header { background-color: var(--primary-color); color: white; padding: 0.8rem 1.2rem; }
     .container-header h3 { margin: 0; font-size: 1.2rem; }
-    .container-stats { padding: 1rem; background-color: #fafbfc; border-bottom: 1px solid var(--border-color); }
-    .stat-item { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
-    .stat-item:not(:last-child) { margin-bottom: 0.5rem; }
+    .container-stats { padding: 1rem 1.2rem; border-bottom: 1px solid var(--border-color); background-color: #fff; display: flex; flex-direction: column; gap: 0.5rem;}
+    .stat-item { display: flex; justify-content: space-between; align-items: center; font-size: 0.95rem; }
     .stat-item span { color: #42526e; }
-    .container-content { padding: 1rem; flex-grow: 1; }
-    .container-content h4 { margin-top: 0; margin-bottom: 1rem; font-size: 1rem; color: var(--text-color); }
-    .content-item:not(:last-child) { margin-bottom: 1rem; }
-    .pallet-info { font-size: 0.9rem; padding: 0.75rem; border-radius: 4px; }
-    .pallet-info strong { display: block; margin-bottom: 0.25rem; }
-    .single-pallet { background-color: #e6fcff; border-left: 4px solid #00c7e6; display: flex; justify-content: space-between; align-items: center; }
-    .combined-pallet { background-color: #e9e7fd; border-left: 4px solid #6554c0; }
-    .combined-pallet ul { list-style-type: none; padding-left: 1rem; margin: 0.5rem 0 0 0; }
-    .combined-pallet li { color: #42526e; }
+    .container-content { padding: 1rem 1.2rem; flex-grow: 1; display: flex; flex-direction: column; gap: 1rem; }
+    .container-content > h4 { margin-top: 0; margin-bottom: 0; font-size: 1rem; color: var(--text-color); }
+    
+    /* Pallet Card Styles */
+    .pallet-card { border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color); }
+    .pallet-card-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; font-weight: 700; }
+    .pallet-card-body { padding: 1rem; font-size: 0.9rem; }
+    .pallet-card-footer { padding: 0.5rem 1rem; display: flex; gap: 0.75rem; border-top: 1px solid var(--border-color); }
+
+    /* Single Pallet */
+    .pallet-card--single .pallet-card-header { background-color: var(--single-pallet-bg); color: var(--single-pallet-color); }
+    .pallet-card--single .pallet-card-body { background-color: #fff; }
+    .pallet-card--single .pallet-details { display: flex; justify-content: space-between; align-items: flex-start; }
+    .pallet-card--single .product-info { font-weight: 500; }
+    .pallet-card--single .product-company { color: #6b778c; font-size: 0.85rem; }
+    .pallet-card--single .quantity-info { text-align: right; }
+    .pallet-card--single .quantity-info strong { font-size: 1.1em; color: var(--text-color); }
+
+    /* Combined Pallet */
+    .pallet-card--combined .pallet-card-header { background-color: var(--combined-pallet-bg); color: var(--combined-pallet-color); }
+    .pallet-card--combined .pallet-card-body { background-color: #fff; }
+    .combined-items-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+    .combined-item { display: flex; justify-content: space-between; padding-bottom: 0.5rem; border-bottom: 1px dashed #dfe1e6; }
+    .combined-item:last-child { border-bottom: none; }
+    .combined-item .product-name { font-weight: 500; }
+
+    /* Tags */
+    .pallet-tag { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 4px; }
+    .pallet-tag--split { background-color: var(--split-tag-bg); color: var(--split-tag-color); }
+    .pallet-tag--cross-ship { background-color: var(--cross-ship-tag-bg); color: var(--cross-ship-tag-color); }
   `}</style>
 );
 
-const ResultsDisplay = ({ results }) => {
-  if (!results || !Array.isArray(results)) return null;
+
+// --- RESULTS DISPLAY COMPONENT (THIẾT KẾ LẠI) ---
+const ResultsDisplay = ({ results, sheetName }) => {
+  if (!results || !Array.isArray(results)) {
+    return <p>Chưa có dữ liệu hoặc dữ liệu không hợp lệ.</p>;
+  }
+
   if (results.length === 0) {
     return (
       <div className="results-container">
         <h2 className="results-title">Không có kết quả</h2>
-        <p className="results-summary">Không tìm thấy giải pháp tối ưu với dữ liệu được cung cấp.</p>
+        <p className="results-summary">Không tìm thấy giải pháp tối ưu cho sheet '{sheetName}'.</p>
       </div>
     );
   }
+
   const formatNumber = (num) => {
     if (typeof num !== 'number' || isNaN(num)) return 'N/A';
-    return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
+  
+  // Component nội bộ để render chi tiết Pallet
+  const PalletItem = ({ content }) => {
+    if (content.type === 'SinglePallet') {
+      return (
+        <div className="pallet-card pallet-card--single">
+          <div className="pallet-card-header">
+            <IconBox />
+            <span>Pallet Đơn: {content.product_code}</span>
+          </div>
+          <div className="pallet-card-body">
+            <div className="pallet-details">
+              <div>
+                <div className="product-info">{content.product_name}</div>
+                <div className="product-company">Công ty: {content.company}</div>
+              </div>
+              <div className="quantity-info">
+                <strong>{formatNumber(content.quantity)} plts</strong>
+                <div>{formatNumber(content.total_weight)} kg</div>
+              </div>
+            </div>
+          </div>
+          {(content.is_split || content.is_cross_ship) && (
+            <div className="pallet-card-footer">
+              {content.is_split && <span className="pallet-tag pallet-tag--split"><IconSplit /> Bị chia nhỏ</span>}
+              {content.is_cross_ship && <span className="pallet-tag pallet-tag--cross-ship"><IconTruck /> Hàng ghép</span>}
+            </div>
+          )}
+        </div>
+      );
+    }
+  
+    if (content.type === 'CombinedPallet') {
+      return (
+        <div className="pallet-card pallet-card--combined">
+          <div className="pallet-card-header">
+            <IconCollection />
+            <span>Pallet Gộp ({formatNumber(content.quantity)} plts)</span>
+          </div>
+          <div className="pallet-card-body">
+            <ul className="combined-items-list">
+              {content.items.map((item, index) => (
+                <li key={index} className="combined-item">
+                  <div>
+                    <div className="product-name">[{item.product_code}] {item.product_name}</div>
+                    <div className="product-company">Cty: {item.company}</div>
+                  </div>
+                  <div className="quantity-info" style={{textAlign: 'right'}}>
+                     <strong>{formatNumber(item.quantity)} plts</strong>
+                     <div>{formatNumber(item.total_weight)} kg</div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+           {content.is_cross_ship && (
+            <div className="pallet-card-footer">
+              <span className="pallet-tag pallet-tag--cross-ship"><IconTruck /> Hàng ghép</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+  
+    return null; // Không render gì nếu type không xác định
+  };
+
+
   return (
     <div className="results-container">
-      <h2 className="results-title">Kết quả tối ưu hóa</h2>
+      <h2 className="results-title">Kết quả tối ưu hóa cho Sheet: {sheetName}</h2>
       <p className="results-summary">Tổng số container cần sử dụng: <strong>{results.length}</strong></p>
       <div className="containers-grid">
         {results.map((container) => (
-          <div key={container.container_number} className="container-card">
-            <div className="container-header"><h3>Container #{container.container_number}</h3></div>
+          <div key={container.id} className="container-card">
+            <div className="container-header">
+              <h3>{container.id} </h3>
+            </div>
             <div className="container-stats">
-              <div className="stat-item"><span>Tổng số lượng:</span><strong>{formatNumber(container.total_boxes)} / 20.00 Pallets</strong></div>
-              <div className="stat-item"><span>Tổng khối lượng:</span><strong>{formatNumber(container.total_weight)} / 24,000.00 kg</strong></div>
+              <div className="stat-item">
+                <span>Tổng số lượng:</span>
+                <strong>{formatNumber(container.total_quantity)} / 20.00 Pallets</strong>
+              </div>
+              <div className="stat-item">
+                <span>Tổng khối lượng:</span>
+                <strong>{formatNumber(container.total_weight)} / {formatNumber(24000)} kg</strong>
+              </div>
             </div>
             <div className="container-content">
               <h4>Chi tiết Pallet:</h4>
-              {container.contents.map((content, index) => (
-                <div key={index} className="content-item">
-                  {content.type === 'SinglePallet' && (<div className="pallet-info single-pallet"><strong>Pallet Đơn:</strong><span>{formatNumber(content.items[0]?.number_of_boxes)} plls</span><span>({formatNumber(content.items[0]?.total_item_weight)} kg)</span></div>)}
-                  {content.type === 'CombinedPallet' && (<div className="pallet-info combined-pallet"><strong>Pallet Kết hợp (Tổng: {formatNumber(content.total_boxes_count)} plls, {formatNumber(content.total_weight)} kg):</strong><ul>{content.items.map((item, subIndex) => (<li key={subIndex}>- {formatNumber(item?.number_of_boxes)} plls ({formatNumber(item?.total_item_weight)} kg)</li>))}</ul></div>)}
-                </div>
-              ))}
+              {/* Giả định container.contents có cấu trúc dữ liệu mới */}
+              {Array.isArray(container.contents) ? (
+                container.contents.map((content, index) => <PalletItem key={index} content={content} />)
+              ) : (
+                <p>Dữ liệu chi tiết pallet không có sẵn.</p>
+              )}
             </div>
           </div>
         ))}
@@ -114,6 +231,9 @@ const ResultsDisplay = ({ results }) => {
   );
 };
 
+
+// --- APP COMPONENT CHÍNH ---
+// Component này gần như giữ nguyên, chỉ thay đổi giả định về dữ liệu trả về từ API
 function App() {
   const [file, setFile] = useState(null);
   const [uploadedFileInfo, setUploadedFileInfo] = useState(null);
@@ -146,13 +266,14 @@ function App() {
       });
       if (response.data.success) {
         setUploadedFileInfo(response.data);
-        setConfig({ sheetName: response.data.sheets[0] || '' });
+        const sheets = response.data.sheets || [];
+        setConfig({ sheetName: sheets[0] || '' });
         setStep('configure');
       } else {
         setError(response.data.error || 'Lỗi: Không thể xử lý file tải lên.');
       }
     } catch (err) {
-      const errorMsg = err.response?.data?.error || (err.code === 'ECONNABORTED' ? 'Thời gian tải lên quá lâu, vui lòng thử lại.' : 'Đã có lỗi xảy ra khi kết nối tới server.');
+      const errorMsg = err.response?.data?.error || (err.code === 'ECONNABORTED' ? 'Thời gian tải lên quá lâu.' : 'Lỗi kết nối tới server.');
       setError(errorMsg);
     } finally {
       setIsLoading(false);
@@ -179,14 +300,21 @@ function App() {
       const response = await axios.post(`${API_URL}/api/process`, payload, {
         timeout: 300000 
       });
-      if (response.data.success) {
+
+      // QUAN TRỌNG: Giả định API trả về cấu trúc mới
+      // ví dụ: response.data.results[0].contents = [{type: 'SinglePallet', ...}, {type: 'CombinedPallet', ...}]
+      if (response.data.results) {
         setResults(response.data.results);
         setStep('results');
+      } else if (response.data.error) {
+        setError(response.data.error);
+        setStep('configure'); 
       } else {
-        setError(response.data.error || 'Lỗi: Không thể xử lý dữ liệu.');
+        setError('Lỗi: Phản hồi không hợp lệ từ server.');
       }
+
     } catch (err) {
-      const errorMsg = err.response?.data?.error || (err.code === 'ECONNABORTED' ? 'Thời gian xử lý quá lâu, vui lòng thử lại.' : 'Đã có lỗi xảy ra khi kết nối tới server.');
+      const errorMsg = err.response?.data?.error || (err.code === 'ECONNABORTED' ? 'Thời gian xử lý quá lâu.' : 'Lỗi kết nối tới server.');
       setError(errorMsg);
     } finally {
       setIsLoading(false);
@@ -203,6 +331,7 @@ function App() {
     }
   };
 
+  // Các hàm render step không thay đổi
   const renderUploadStep = () => (
     <div className="card">
       <h1 className="title">Tối ưu hóa xếp dỡ Container</h1>
@@ -224,7 +353,7 @@ function App() {
       <div className="form-group">
         <label htmlFor="sheetName">Chọn Sheet (Subtab)</label>
         <select id="sheetName" name="sheetName" value={config.sheetName} onChange={handleConfigChange}>
-          {uploadedFileInfo.sheets.map(sheet => <option key={sheet} value={sheet}>{sheet}</option>)}
+          {uploadedFileInfo && Array.isArray(uploadedFileInfo.sheets) && uploadedFileInfo.sheets.map(sheet => <option key={sheet} value={sheet}>{sheet}</option>)}
         </select>
       </div>
       <div className="button-group">
@@ -236,9 +365,9 @@ function App() {
   );
 
   const renderResultsStep = () => (
-    <div>
+    <div className="container"> 
       <button onClick={() => goBack('configure')} className="back-button">← Quay lại cấu hình</button>
-      <ResultsDisplay results={results} />
+      <ResultsDisplay results={results} sheetName={config.sheetName} />
     </div>
   );
   
