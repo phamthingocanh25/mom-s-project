@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 
 // Giả lập API_URL để code có thể chạy trong môi trường preview
-const API_URL = 'https://flask-backend-dt0o.onrender.com';
+const API_URL = 'https://flask-backend-01.onrender.com';
 
 // --- BIỂU TƯỢỢNG (ICONS) ---
 // Các component SVG cho biểu tượng để giao diện thêm trực quan.
