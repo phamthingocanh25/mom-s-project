@@ -1,0 +1,192 @@
+# test_script.py
+
+# ===================================================================
+# PHẦN 1: KẾT HỢP MÃ NGUỒN TỪ CÁC FILE CỦA BẠN
+# Bao gồm các định nghĩa lớp và hàm cần thiết từ optimizer.py và data_processor.py
+# ===================================================================
+
+import pandas as pd
+import math
+from itertools import combinations
+from typing import List, Tuple
+
+# --- HẰNG SỐ CẤU HÌNH (từ optimizer.py) ---
+MAX_WEIGHT = 24000.0
+MAX_PALLETS = 20.0
+EPSILON = 1e-6
+
+# --- CÁC LỚP ĐỐI TƯỢNG (từ optimizer.py) ---
+
+class Pallet:
+    """Đại diện cho một pallet hoặc một phần của pallet."""
+    def __init__(self, p_id, product_code, product_name, company, quantity, weight_per_pallet):
+        self.id = p_id
+        self.product_code = product_code
+        self.product_name = product_name
+        self.company = str(company)
+        self.quantity = float(quantity)
+        self.weight_per_pallet = float(weight_per_pallet)
+        self.total_weight = self.quantity * self.weight_per_pallet
+        self.is_combined = False
+        self.original_pallets = [self]
+        self.is_split = False
+        self.is_cross_ship = False
+
+    def __repr__(self):
+        type_info = ""
+        if self.is_combined: type_info = " [Combined]"
+        if self.is_split: type_info = " [Split]"
+        if self.is_cross_ship: type_info += " [Cross-Ship]"
+        return (f"Pallet(id={self.id}, code='{self.product_code}', qty={self.quantity:.2f}, "
+                f"wgt={self.total_weight:.2f}, Cty={self.company}){type_info}")
+
+# --- CÁC HÀM CẦN THIẾT ---
+
+# Hàm từ data_processor.py
+def load_and_prepare_pallets(filepath, sheet_name):
+    """
+    Đọc và làm sạch dữ liệu từ file Excel, trả về một danh sách các đối tượng Pallet.
+    """
+    try:
+        column_indices = [1, 2, 3, 10, 11]
+        column_names = ['product_code', 'product_name', 'company', 'weight_per_pallet', 'quantity']
+        df = pd.read_excel(
+            filepath, sheet_name=sheet_name, header=None, skiprows=5,
+            usecols=column_indices, names=column_names
+        )
+        df.dropna(subset=['product_name', 'company', 'weight_per_pallet', 'quantity'], how='any', inplace=True)
+        df['product_code'].fillna('Không có mã', inplace=True)
+        df['product_name'].fillna('Không có tên', inplace=True)
+        for col in ['weight_per_pallet', 'quantity']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df.dropna(subset=['weight_per_pallet', 'quantity'], inplace=True)
+        df = df[df['quantity'] > 0].copy()
+        df['company'] = df['company'].astype(str)
+        if df.empty:
+            return None, "Không tìm thấy dữ liệu hợp lệ."
+        pallets = [Pallet(f"P{i}", r['product_code'], r['product_name'], r['company'], r['quantity'], r['weight_per_pallet'])
+                   for i, r in df.iterrows()]
+        return pallets, None
+    except Exception as e:
+        return None, f"Lỗi xử lý file Excel: {e}"
+
+# Hàm cần test từ optimizer.py
+def create_combined_pallets(float_pallets: List[Pallet]) -> Tuple[List[Pallet], List[Pallet]]:
+    """
+    [SỬA] Logic gộp pallet được làm lại cho rõ ràng hơn.
+    Cố gắng gộp các pallet lẻ thành các pallet có tổng quantity gần bằng 1.0.
+    """
+    # [SỬA] Tách pallet theo công ty trước khi gộp
+    pallets_by_company = {}
+    for p in float_pallets:
+        pallets_by_company.setdefault(p.company, []).append(p)
+
+    final_combined_pallets = []
+    final_remaining_pallets = []
+
+    for company, company_float_pallets in pallets_by_company.items():
+        pallets_to_process = sorted(company_float_pallets, key=lambda p: p.quantity, reverse=True)
+        combined_pallets = []
+        used_indices = set()
+
+        for i in range(len(pallets_to_process)):
+            if i in used_indices:
+                continue
+            
+            best_group = [pallets_to_process[i]]
+            best_sum = pallets_to_process[i].quantity
+            
+            if best_sum < 1.0 - EPSILON:
+                remaining_to_check = [p for j, p in enumerate(pallets_to_process) if j > i and j not in used_indices]
+                
+                for k in range(1, len(remaining_to_check) + 1):
+                    for combo in combinations(remaining_to_check, k):
+                        temp_group = [pallets_to_process[i]] + list(combo)
+                        temp_sum = sum(p.quantity for p in temp_group)
+                        temp_wgt = sum(p.total_weight for p in temp_group)
+                        
+                        if temp_sum <= 1.0 + EPSILON and temp_wgt <= MAX_WEIGHT:
+                            if temp_sum > best_sum:
+                                best_sum = temp_sum
+                                best_group = temp_group
+        
+            if len(best_group) > 1:
+                indices_to_mark = set()
+                for p_in_group in best_group:
+                    for idx, p_original in enumerate(pallets_to_process):
+                        if p_in_group.id == p_original.id:
+                            indices_to_mark.add(idx)
+                            break
+                used_indices.update(indices_to_mark)
+                
+                total_qty = sum(p.quantity for p in best_group)
+                total_wgt = sum(p.total_weight for p in best_group)
+                
+                new_code = "+".join(sorted(list(set(p.product_code for p in best_group))))
+                new_name = "+".join(sorted(list(set(p.product_name for p in best_group))))
+                
+                combined_p = Pallet(
+                    f"C_{'+'.join([p.id for p in best_group])}",
+                    new_code, new_name, best_group[0].company,
+                    total_qty, total_wgt / total_qty if total_qty > 0 else 0
+                )
+                combined_p.is_combined = True
+                combined_pallets.append(combined_p)
+        
+        company_remaining = [p for i, p in enumerate(pallets_to_process) if i not in used_indices]
+        final_combined_pallets.extend(combined_pallets)
+        final_remaining_pallets.extend(company_remaining)
+        
+    return final_combined_pallets, final_remaining_pallets
+
+# ===================================================================
+# PHẦN 2: KỊCH BẢN KIỂM THỬ
+# ===================================================================
+
+def run_test_with_real_data():
+    print("==========================================================")
+    print("  BẮT ĐẦU TEST HÀM 'create_combined_pallets' VỚI DỮ LIỆU THẬT")
+    print("==========================================================")
+
+    # 1. Lấy thông tin file từ người dùng
+    filepath = input(">> Vui lòng nhập đường dẫn đến file Excel của bạn: ")
+    sheet_name = input(">> Vui lòng nhập tên sheet chứa dữ liệu: ")
+
+    # 2. Đọc và chuẩn bị dữ liệu
+    print(f"\n--- Đang đọc dữ liệu từ '{filepath}' (Sheet: '{sheet_name}')...")
+    all_pallets, error = load_and_prepare_pallets(filepath, sheet_name)
+
+    if error:
+        print(f"\n!!! LỖI: {error}")
+        return
+
+    # 3. Lọc ra các pallet lẻ (float pallets) để test
+    float_pallets = [p for p in all_pallets if abs(p.quantity - round(p.quantity)) >= EPSILON]
+
+    if not float_pallets:
+        print("\n--- Không tìm thấy pallet lẻ (float pallets) nào trong dữ liệu để tiến hành gộp.")
+        return
+        
+    print(f"\n--- Tìm thấy {len(float_pallets)} pallet lẻ. Bắt đầu gộp...")
+    print("--- Danh sách pallet lẻ đầu vào:")
+    for p in sorted(float_pallets, key=lambda p: (p.company, p.quantity), reverse=True):
+        print(f"  - {p}")
+
+    # 4. Gọi hàm cần test
+    combined_pallets, remaining_pallets = create_combined_pallets(float_pallets)
+
+    # 5. In kết quả chi tiết
+    print("\n-------------------- KẾT QUẢ --------------------")
+    print(f"\n>>> SỐ PALLET ĐÃ GỘP THÀNH CÔNG: {len(combined_pallets)}")
+    for p in combined_pallets:
+        print(f"  - {p}")
+
+    print(f"\n>>> SỐ PALLET LẺ CÒN LẠI (KHÔNG GỘP ĐƯỢC): {len(remaining_pallets)}")
+    for p in remaining_pallets:
+        print(f"  - {p}")
+    print("==================== TEST KẾT THÚC ====================")
+
+
+# Chạy kịch bản test khi file này được thực thi
+if __name__ == "__main__":
+    run_test_with_real_data()
