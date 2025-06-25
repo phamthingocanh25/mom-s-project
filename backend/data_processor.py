@@ -169,56 +169,52 @@ def load_and_prepare_pallets(filepath, sheet_name):
 
 def generate_response_data(final_containers):
     """
-    Chuyển đổi kết quả tối ưu hóa thành định dạng JSON để gửi về frontend.
-    Khi một pallet được gộp, nó sẽ bao gồm danh sách các pallet gốc.
+    Chuyển đổi kết quả tối ưu hóa thành định dạng JSON để gửi về frontend,
+    đảm bảo cấu trúc tương thích với component ResultsDisplay.
     """
-    results = {
-        "total_containers": len(final_containers),
-        "containers": []
-    }
-
+    containers_list = []
     for container in sorted(final_containers, key=lambda c: int(c.id.split('_')[-1])):
-        container_details = {
-            "id": container.id,
-            "main_company": container.main_company,
-            "total_quantity": f"{container.total_quantity:.2f}",
-            "total_weight": f"{container.total_weight:.2f}",
-            "pallets": []
-        }
+        container_contents = []
         for pallet in container.pallets:
-            pallet_details = {
-                "id": pallet.id,
-                "product_code": pallet.product_code,
-                "product_name": pallet.product_name,
-                "company": pallet.company,
-                "quantity": f"{pallet.quantity:.2f}",
-                "total_weight": f"{pallet.total_weight:.2f}",
-                "is_combined": pallet.is_combined,
-                "is_split": pallet.is_split,
-                "is_cross_ship": pallet.is_cross_ship,
-                "original_pallets": []
-            }
-
-            # *** LOGIC MỚI: Nếu pallet là hàng gộp, thêm chi tiết các pallet con ***
             if pallet.is_combined:
-                # Đặt tên cho pallet gộp để dễ nhận biết hơn
-                pallet_details["product_name"] = "Hàng gộp" 
-                
+                items = []
                 for p_orig in pallet.original_pallets:
-                    original_pallet_info = {
-                        "id": p_orig.id,
+                    items.append({
                         "product_code": p_orig.product_code,
                         "product_name": p_orig.product_name,
                         "company": p_orig.company,
-                        "quantity": f"{p_orig.quantity:.2f}",
-                        "total_weight": f"{p_orig.total_weight:.2f}",
-                    }
-                    pallet_details["original_pallets"].append(original_pallet_info)
+                        "quantity": float(f"{p_orig.quantity:.2f}"),
+                        "total_weight": float(f"{p_orig.total_weight:.2f}"),
+                    })
+                pallet_data = {
+                    "type": "CombinedPallet",
+                    "quantity": float(f"{pallet.quantity:.2f}"),
+                    "items": items,
+                    "is_cross_ship": pallet.is_cross_ship
+                }
+            else:
+                pallet_data = {
+                    "type": "SinglePallet",
+                    "product_code": pallet.product_code,
+                    "product_name": pallet.product_name,
+                    "company": pallet.company,
+                    "quantity": float(f"{pallet.quantity:.2f}"),
+                    "total_weight": float(f"{pallet.total_weight:.2f}"),
+                    "is_split": pallet.is_split,
+                    "is_cross_ship": pallet.is_cross_ship
+                }
+            container_contents.append(pallet_data)
 
-            container_details["pallets"].append(pallet_details)
-        results["containers"].append(container_details)
-    
-    return results
+        container_details = {
+            "id": container.id,
+            "total_quantity": float(f"{container.total_quantity:.2f}"),
+            "total_weight": float(f"{container.total_weight:.2f}"),
+            "contents": container_contents  # Thay "pallets" bằng "contents"
+        }
+        containers_list.append(container_details)
+
+    # Trả về đối tượng JSON với key "results" mà frontend mong đợi
+    return {"results": containers_list}
 def separate_pallets_by_company(all_pallets, company1_name, company2_name):
 
     pallets_company1 = [] # tên công ty 1
