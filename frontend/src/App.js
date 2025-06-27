@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 
 // Giả lập API_URL để code có thể chạy trong môi trường preview
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+const API_URL = process.env.REACT_APP_API_URL || "https://mom-s-project-backend-02.onrender.com";
 
 // --- BIỂU TƯỢỢNG (ICONS) ---
 // Các component SVG cho biểu tượng để giao diện thêm trực quan.
@@ -301,10 +301,13 @@ function App() {
         timeout: 300000 
       });
 
-      // QUAN TRỌNG: Giả định API trả về cấu trúc mới
-      // ví dụ: response.data.results[0].contents = [{type: 'SinglePallet', ...}, {type: 'CombinedPallet', ...}]
       if (response.data.results) {
-        setResults(response.data.results);
+        // Lưu trữ kết quả để có thể gửi đi tạo packing list
+        setResults({
+          optimizedContainers: response.data.results, 
+          originalFilepath: uploadedFileInfo.filepath,
+          sheetName: config.sheetName 
+        });
         setStep('results');
       } else if (response.data.error) {
         setError(response.data.error);
@@ -319,6 +322,54 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+  
+  // *** HÀM MỚI: Xử lý xuất Packing List ***
+  const handleExportPackingList = async () => {
+      // Mở hộp thoại để người dùng chọn nơi lưu file
+      const saveFile = window.showSaveFilePicker ? await window.showSaveFilePicker({
+          suggestedName: `PackingList_${config.sheetName}.xlsx`,
+          types: [{
+              description: 'Excel Files',
+              accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] },
+          }],
+      }) : null;
+
+      if (!saveFile) {
+          alert("Bạn đã hủy thao tác lưu file.");
+          return;
+      }
+      
+      setIsLoading(true);
+      setError('');
+      try {
+          const payload = {
+              optimized_results: results.optimizedContainers,
+              original_filepath: results.originalFilepath,
+              sheet_name: results.sheetName
+          };
+
+          const response = await axios.post(`${API_URL}/api/generate_packing_list`, payload, {
+              responseType: 'blob', // Yêu cầu backend trả về file dạng blob
+              timeout: 300000
+          });
+          
+          // Tạo một URL tạm thời từ blob và tải xuống
+          const url = window.URL.createObjectURL(new Blob([response.data]));
+          const link = document.createElement('a');
+          link.href = url;
+          link.setAttribute('download', `PackingList_${config.sheetName}.xlsx`);
+          document.body.appendChild(link);
+          link.click();
+          link.parentNode.removeChild(link);
+          window.URL.revokeObjectURL(url);
+          
+      } catch (err) {
+          const errorMsg = err.response?.data?.error || 'Lỗi khi tạo packing list.';
+          setError(errorMsg);
+      } finally {
+          setIsLoading(false);
+      }
   };
 
   const goBack = (targetStep) => {
@@ -366,8 +417,14 @@ function App() {
 
   const renderResultsStep = () => (
     <div className="container"> 
-      <button onClick={() => goBack('configure')} className="back-button">← Quay lại cấu hình</button>
-      <ResultsDisplay results={results} sheetName={config.sheetName} />
+      <div className="button-group" style={{ justifyContent: 'space-between', marginBottom: '1rem' }}>
+        <button onClick={() => goBack('configure')} className="secondary" style={{width: 'auto'}}>← Quay lại cấu hình</button>
+        {/* NÚT MỚI ĐƯỢC THÊM VÀO ĐÂY */}
+        <button onClick={handleExportPackingList} disabled={isLoading} style={{width: 'auto'}}>
+          {isLoading ? 'Đang xử lý...' : 'Xuất Packing List'}
+        </button>
+      </div>
+      <ResultsDisplay results={results.optimizedContainers} sheetName={config.sheetName} />
     </div>
   );
   
