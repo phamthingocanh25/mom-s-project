@@ -4,16 +4,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Border, Side, Alignment
 from openpyxl.utils import get_column_letter, rows_from_range, cols_from_range
 import numpy as np # Cần để xử lý giá trị rỗng
+import re # Cần để xử lý giá trị rỗng
 
 def create_full_packing_list(data_df, output_filename="Packing_List_Final.xlsx"):
-    """
-    Tạo một tệp Excel Packing List hoàn chỉnh từ đầu đến cuối,
-    kết hợp phần đầu, phần thân (chi tiết hàng hóa) và phần chân (tổng kết, chữ ký).
 
-    Args:
-        data_df (pd.DataFrame): DataFrame chứa dữ liệu chi tiết của các kiện hàng.
-        output_filename (str): Tên của tệp Excel sẽ được tạo.
-    """
     try:
         # ==============================================================================
         # PHẦN 1: KHỞI TẠO WORKBOOK VÀ TẠO PHẦN ĐẦU

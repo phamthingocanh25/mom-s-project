@@ -8,7 +8,7 @@ import io
 import pandas as pd
 import numpy as np
 from openpyxl import Workbook
-from openpyxl.styles import Font, Border, Side, Alignment
+from openpyxl.styles import Font, Border, Side, Alignment,PatternFill
 from openpyxl.utils import get_column_letter, rows_from_range, cols_from_range
 
 # --- IMPORT CÁC MODULE XỬ LÝ ---
