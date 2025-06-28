@@ -42,26 +42,35 @@ def _prepare_data_for_pkl(container_data, raw_data_map):
     pkl_data_list = []
     item_no_counter = 1
 
+    # Duyệt qua từng pallet (đơn hoặc gộp) trong container
     for content in container_data.get('contents', []):
+        # --- TRƯỜNG HỢP 1: PALLET ĐƠN (Integer hoặc Single Float) ---
         if content['type'] == 'SinglePallet':
             key = str(content['product_code']) + '||' + str(content['product_name'])
             raw_info = raw_data_map.get(key, {})
 
-            # Tính toán các giá trị dựa trên quy tắc trong framework
-            qty_boxes = float(raw_info.get('BoxPerPallet', 0))
+            # Lấy số lượng pallet đã được tối ưu hóa từ data_processor.py
+            optimized_pallet_qty = float(content.get('quantity', 0))
+            
+            # --- TÍNH TOÁN THEO FRAMEWORK ---
+            # Quantity (boxes) = Số lượng pallet tối ưu * Số hộp trên mỗi pallet (cột H từ Excel gốc)
+            qty_boxes = optimized_pallet_qty * float(raw_info.get('BoxPerPallet', 0))
+            
             qty_per_box = float(raw_info.get('QtyPerBox', 0))
             qty_pcs = qty_boxes * qty_per_box
             w_pc_kgs = (float(raw_info.get('WeightPerPc_Raw', 0)) / qty_per_box) if qty_per_box > 0 else 0
             nw_kgs = qty_pcs * w_pc_kgs
-            gw_kgs = nw_kgs + (qty_boxes * 0.4) + 50 # Công thức từ framework
+            
+            # G.W (kgs) cho pallet đơn
+            gw_kgs = nw_kgs + (qty_boxes * 0.4) + 50
 
             row = {
                 'Item No.': item_no_counter,
                 'Pallet': f"No.{item_no_counter:03d}",
                 'Part Name': content['product_name'],
                 'Part No.': content['product_code'],
-                "Q'ty (boxes)": qty_boxes,
-                "Q'ty (pcs)": qty_pcs,
+                "Q'ty (boxes)": f"{qty_boxes:.2f}",
+                "Q'ty (pcs)": f"{qty_pcs:.2f}",
                 'W / pc (kgs)': f"{w_pc_kgs:.4f}",
                 'N.W (kgs)': f"{nw_kgs:.2f}",
                 'G.W (kgs)': f"{gw_kgs:.2f}",
@@ -69,28 +78,41 @@ def _prepare_data_for_pkl(container_data, raw_data_map):
                 "Q'ty/box": raw_info.get('QtyPerBox', ''),
                 "Box/Pallet": raw_info.get('BoxPerPallet', ''),
                 "Box Spec": raw_info.get('BoxSpec', ''),
-                'Unnamed: 7': '',
-                "Q'ty/ box": raw_info.get('QtyPerBox', '') # Giống cột 'Q'ty/box'
             }
             pkl_data_list.append(row)
             item_no_counter += 1
 
+        # --- TRƯỜNG HỢP 2: PALLET GỘP (Combined) ---
         elif content['type'] == 'CombinedPallet':
-            # Tính toán trước tổng các giá trị cho pallet gộp
-            total_nw_group = sum(
-                (float(item['quantity']) * float(raw_data_map.get(str(item['product_code']) + '||' + str(item['product_name']), {}).get('BoxPerPallet', 0))) *
-                float(raw_data_map.get(str(item['product_code']) + '||' + str(item['product_name']), {}).get('QtyPerBox', 0)) *
-                ((float(raw_data_map.get(str(item['product_code']) + '||' + str(item['product_name']), {}).get('WeightPerPc_Raw', 0)) / float(raw_data_map.get(str(item['product_code']) + '||' + str(item['product_name']), {}).get('QtyPerBox', 0))) if float(raw_data_map.get(str(item['product_code']) + '||' + str(item['product_name']), {}).get('QtyPerBox', 0)) > 0 else 0)
-                for item in content['items']
-            )
-            total_boxes_group = sum(float(item['quantity']) * float(raw_data_map.get(str(item['product_code']) + '||' + str(item['product_name']), {}).get('BoxPerPallet', 0)) for item in content['items'])
+            # --- TÍNH TOÁN TỔNG CHO CẢ PALLET GỘP (để điền G.W) ---
+            total_nw_group = 0
+            total_boxes_group = 0
+            
+            # Vòng lặp tạm để tính tổng trước
+            for item in content['items']:
+                key_item = str(item['product_code']) + '||' + str(item['product_name'])
+                raw_info_item = raw_data_map.get(key_item, {})
+                
+                # Quantity (boxes) của từng mặt hàng trong pallet gộp
+                qty_boxes_item = float(item['quantity']) * float(raw_info_item.get('BoxPerPallet', 0))
+                qty_per_box_item = float(raw_info_item.get('QtyPerBox', 0))
+                qty_pcs_item = qty_boxes_item * qty_per_box_item
+                w_pc_kgs_item = (float(raw_info_item.get('WeightPerPc_Raw', 0)) / qty_per_box_item) if qty_per_box_item > 0 else 0
+                nw_kgs_item = qty_pcs_item * w_pc_kgs_item
+                
+                total_nw_group += nw_kgs_item
+                total_boxes_group += qty_boxes_item
+            
+            # G.W (kgs) cho pallet gộp (chỉ hiển thị ở dòng đầu tiên)
             gw_kgs_group = total_nw_group + (total_boxes_group * 0.4) + 50
 
+            # --- TẠO CÁC DÒNG CHO TỪNG MẶT HÀNG TRONG PALLET GỘP ---
             is_first_item_in_group = True
             for item in content['items']:
                 key = str(item['product_code']) + '||' + str(item['product_name'])
                 raw_info = raw_data_map.get(key, {})
 
+                # Lấy lại các giá trị đã tính
                 qty_boxes_item = float(item['quantity']) * float(raw_info.get('BoxPerPallet', 0))
                 qty_per_box_item = float(raw_info.get('QtyPerBox', 0))
                 qty_pcs_item = qty_boxes_item * qty_per_box_item
@@ -106,19 +128,25 @@ def _prepare_data_for_pkl(container_data, raw_data_map):
                     "Q'ty (pcs)": f"{qty_pcs_item:.2f}",
                     'W / pc (kgs)': f"{w_pc_kgs_item:.4f}",
                     'N.W (kgs)': f"{nw_kgs_item:.2f}",
+                    # G.W và MEAS chỉ điền ở dòng đầu tiên của nhóm
                     'G.W (kgs)': f"{gw_kgs_group:.2f}" if is_first_item_in_group else '',
                     'MEAS. (m)': "1.15*1.15*0.8" if is_first_item_in_group else '',
                     "Q'ty/box": raw_info.get('QtyPerBox', ''),
                     "Box/Pallet": raw_info.get('BoxPerPallet', ''),
                     "Box Spec": raw_info.get('BoxSpec', ''),
-                    'Unnamed: 7': '',
-                    "Q'ty/ box": raw_info.get('QtyPerBox', '')
                 }
                 pkl_data_list.append(row)
                 is_first_item_in_group = False
+            
             item_no_counter += 1
 
-    return pd.DataFrame(pkl_data_list)
+    # Tạo DataFrame từ list các dictionary
+    # Xóa các cột không cần thiết mà có thể được tạo ra từ file mẫu
+    df = pd.DataFrame(pkl_data_list)
+    cols_to_drop = ['Unnamed: 7', "Q'ty/ box"]
+    df = df.drop(columns=[col for col in cols_to_drop if col in df.columns])
+    
+    return df
 
 
 def write_packing_list_to_sheet(ws, data_df, container_id_num):
