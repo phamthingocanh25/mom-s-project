@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import axios from 'axios';
 
 // Giả lập API_URL để code có thể chạy trong môi trường preview
-const API_URL = process.env.REACT_APP_API_URL || "https://mom-s-project-backend-02.onrender.com";
-
+//const API_URL = process.env.REACT_APP_API_URL || "https://mom-s-project-backend-02.onrender.com";
+const API_URL = "http://127.0.0.1:5001";
 // --- BIỂU TƯỢỢNG (ICONS) ---
 // Các component SVG cho biểu tượng để giao diện thêm trực quan.
 const IconBox = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>;
@@ -301,12 +301,13 @@ function App() {
         timeout: 300000 
       });
 
-      if (response.data.results) {
-        // Lưu trữ kết quả để có thể gửi đi tạo packing list
+      // === PHẦN SỬA LỖI NHỎ NHƯNG QUAN TRỌNG ===
+      if (response.data && response.data.results) {
+        // Thay vì lưu toàn bộ response, chỉ lưu những gì cần thiết
         setResults({
           optimizedContainers: response.data.results, 
-          originalFilepath: uploadedFileInfo.filepath,
-          sheetName: config.sheetName 
+          originalFilepath: uploadedFileInfo.filepath, // Lấy từ state đã có
+          sheetName: config.sheetName // Lấy từ state đã có
         });
         setStep('results');
       } else if (response.data.error) {
@@ -326,51 +327,101 @@ function App() {
   
   // *** HÀM MỚI: Xử lý xuất Packing List ***
   const handleExportPackingList = async () => {
-      // Mở hộp thoại để người dùng chọn nơi lưu file
-      const saveFile = window.showSaveFilePicker ? await window.showSaveFilePicker({
-          suggestedName: `PackingList_${config.sheetName}.xlsx`,
-          types: [{
-              description: 'Excel Files',
-              accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] },
-          }],
-      }) : null;
+    console.log("--- [FRONTEND] Bắt đầu quá trình xuất Packing List ---");
+    setIsLoading(true);
+    setError('');
 
-      if (!saveFile) {
-          alert("Bạn đã hủy thao tác lưu file.");
-          return;
-      }
-      
-      setIsLoading(true);
-      setError('');
-      try {
-          const payload = {
-              optimized_results: results.optimizedContainers,
-              original_filepath: results.originalFilepath,
-              sheet_name: results.sheetName
-          };
+    if (!results || !results.optimizedContainers) {
+        const errorMsg = "Lỗi nghiêm trọng: Dữ liệu 'results' không tồn tại để xuất file.";
+        console.error(`[FRONTEND] ${errorMsg}`);
+        setError(errorMsg);
+        setIsLoading(false);
+        return;
+    }
 
-          const response = await axios.post(`${API_URL}/api/generate_packing_list`, payload, {
-              responseType: 'blob', // Yêu cầu backend trả về file dạng blob
-              timeout: 300000
-          });
-          
-          // Tạo một URL tạm thời từ blob và tải xuống
-          const url = window.URL.createObjectURL(new Blob([response.data]));
-          const link = document.createElement('a');
-          link.href = url;
-          link.setAttribute('download', `PackingList_${config.sheetName}.xlsx`);
-          document.body.appendChild(link);
-          link.click();
-          link.parentNode.removeChild(link);
-          window.URL.revokeObjectURL(url);
-          
-      } catch (err) {
-          const errorMsg = err.response?.data?.error || 'Lỗi khi tạo packing list.';
-          setError(errorMsg);
-      } finally {
-          setIsLoading(false);
-      }
-  };
+    try {
+        const payload = {
+            optimized_results: results.optimizedContainers,
+            original_filepath: results.originalFilepath,
+            sheet_name: results.sheetName
+        };
+        console.log("[FRONTEND] Dữ liệu gửi lên server (payload):", JSON.stringify(payload, null, 2));
+
+        const response = await axios.post(`${API_URL}/api/generate_packing_list`, payload, {
+            responseType: 'blob', // Rất quan trọng!
+            timeout: 300000
+        });
+
+        console.log("[FRONTEND] Đã nhận phản hồi thành công từ server. Status:", response.status);
+        console.log("[FRONTEND] Dữ liệu nhận về (blob):", response.data);
+
+        // Kiểm tra lại dữ liệu blob
+        if (!response.data || response.data.size === 0) {
+            throw new Error("Server đã phản hồi nhưng file nhận về bị rỗng.");
+        }
+
+        // Tạo link và tải file
+        const url = window.URL.createObjectURL(response.data);
+        const link = document.createElement('a');
+        link.href = url;
+        const fileName = `PackingList_${results.sheetName || 'export'}.xlsx`;
+        link.setAttribute('download', fileName);
+        
+        console.log(`[FRONTEND] Chuẩn bị tải file: ${fileName}`);
+        document.body.appendChild(link);
+        link.click();
+        
+        console.log("[FRONTEND] Đã kích hoạt tải xuống. Tiến hành dọn dẹp...");
+        link.parentNode.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        
+        console.log("--- [FRONTEND] Quá trình hoàn tất thành công! ---");
+
+    } catch (err) {
+        console.error("--- [FRONTEND] !!! ĐÃ XẢY RA LỖI !!! ---");
+        console.error("[FRONTEND] Đối tượng lỗi chi tiết:", err);
+
+        let errorMsg = 'Lỗi không xác định khi tạo packing list.';
+
+        // Xử lý lỗi khi server trả về mã lỗi (ví dụ: 400, 500)
+        if (err.response) {
+            console.error("[FRONTEND] Server đã phản hồi với mã lỗi:", err.response.status);
+            console.error("[FRONTEND] Dữ liệu lỗi (có thể là blob):", err.response.data);
+            
+            // Vì responseType là 'blob', nên dữ liệu lỗi cũng là blob.
+            // Chúng ta cần đọc blob này dưới dạng text để xem thông báo lỗi JSON từ server.
+            if (err.response.data instanceof Blob) {
+                try {
+                    const errorJsonText = await err.response.data.text();
+                    console.error("[FRONTEND] Thông báo lỗi từ server (dạng text):", errorJsonText);
+                    const errorObj = JSON.parse(errorJsonText);
+                    errorMsg = errorObj.error || 'Không thể phân tích lỗi JSON từ server.';
+                } catch (parseError) {
+                    console.error("[FRONTEND] Không thể chuyển đổi blob lỗi sang JSON.", parseError);
+                    errorMsg = `Lỗi từ server (mã ${err.response.status}), không thể đọc chi tiết.`;
+                }
+            } else {
+                 errorMsg = err.response.data.error || JSON.stringify(err.response.data);
+            }
+
+        } else if (err.request) {
+            // Lỗi không nhận được phản hồi từ server
+            console.error("[FRONTEND] Không nhận được phản hồi từ server. Kiểm tra kết nối mạng và địa chỉ API.");
+            errorMsg = 'Không thể kết nối tới server. Vui lòng kiểm tra lại backend và CORS.';
+        } else {
+            // Lỗi xảy ra ở phía client trước khi gửi request
+            console.error("[FRONTEND] Lỗi không xác định ở client:", err.message);
+            errorMsg = err.message;
+        }
+        
+        setError(errorMsg);
+        console.error(`[FRONTEND] Hiển thị lỗi cho người dùng: ${errorMsg}`);
+        console.error("-----------------------------------------");
+
+    } finally {
+        setIsLoading(false);
+    }
+};
 
   const goBack = (targetStep) => {
     setStep(targetStep);

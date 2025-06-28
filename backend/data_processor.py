@@ -111,7 +111,45 @@ class Container:
     def remaining_weight(self):
         return MAX_WEIGHT - self.total_weight
 
+def load_and_map_raw_data_for_pkl(filepath, sheet_name):
+    """
+    Trích xuất và ánh xạ dữ liệu thô từ file Excel gốc để chuẩn bị cho việc tạo Packing List.
+    Hàm này sẽ là nguồn cung cấp dữ liệu duy nhất cho PKL.
+    """
+    print(f"[DATA_PROCESSOR] Loading raw PKL data from: {filepath}, Sheet: {sheet_name}")
+    try:
+        # Xác định các cột cần thiết cho Packing List theo framework
+        # B(1), C(2), F(5), G(6), H(7), AW(48)
+        # Cột K(10) đã được xử lý ở bước tối ưu nhưng vẫn có thể lấy ở đây nếu cần
+        column_indices_pkl = [1, 2, 5, 6, 7, 48] 
+        column_names_pkl = ['Part No', 'Part Name', 'QtyPerBox', 'WeightPerPc_Raw', 'BoxPerPallet', 'BoxSpec']
 
+        df_raw = pd.read_excel(
+            filepath, 
+            sheet_name=sheet_name, 
+            header=None, 
+            skiprows=5,
+            usecols=column_indices_pkl,
+            names=column_names_pkl
+        ).fillna('')
+
+        # 1. Tạo khóa tra cứu duy nhất từ Part No và Part Name
+        df_raw['lookup_key'] = df_raw['Part No'].astype(str) + '||' + df_raw['Part Name'].astype(str)
+        
+        # 2. Loại bỏ các dòng bị trùng lặp, chỉ giữ lại dòng đầu tiên xuất hiện
+        df_raw_unique = df_raw.drop_duplicates(subset='lookup_key', keep='first')
+        
+        # 3. Chuyển DataFrame đã được làm sạch thành một dictionary để tra cứu nhanh
+        raw_data_map = df_raw_unique.set_index('lookup_key').to_dict('index')
+        
+        print(f"[DATA_PROCESSOR] Successfully created raw data map with {len(raw_data_map)} unique items.")
+        return raw_data_map, None
+    
+    except Exception as e:
+        error_msg = f"Lỗi khi đọc dữ liệu thô cho Packing List: {e}"
+        print(f"[DATA_PROCESSOR] ERROR: {error_msg}")
+        return None, error_msg
+    
 def load_and_prepare_pallets(filepath, sheet_name):
     """
     Đọc và làm sạch dữ liệu từ file Excel, trả về một danh sách các đối tượng Pallet.
