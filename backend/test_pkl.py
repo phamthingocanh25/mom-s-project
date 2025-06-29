@@ -128,6 +128,11 @@ def run_packing_list_generation(optimized_results, original_filepath, sheet_name
     wb = Workbook()
     wb.remove(wb.active)
     pallet_counter = {'item_no': 1, 'pallet_no': 1}
+    
+    # --- START: SỬA LỖI ---
+    # Khởi tạo dictionary để lưu trữ tổng dồn, giống như trong app.py
+    cumulative_totals = {'pcs': 0.0, 'nw': 0.0, 'gw': 0.0}
+    # --- END: SỬA LỖI ---
 
     containers_data = optimized_results['results']
     for container_data in containers_data:
@@ -143,8 +148,27 @@ def run_packing_list_generation(optimized_results, original_filepath, sheet_name
 
         # Chuẩn bị dữ liệu và ghi vào sheet
         df_for_pkl = _prepare_data_for_pkl(container_data, raw_data_map, pallet_counter)
+        
+        # --- START: SỬA LỖI ---
+        # Cập nhật các giá trị tổng dồn sau khi xử lý mỗi container
+        cumulative_totals['pcs'] += df_for_pkl["Q'ty (pcs)"].sum()
+        cumulative_totals['nw'] += df_for_pkl['N.W (kgs)'].sum()
+        cumulative_totals['gw'] += df_for_pkl['G.W (kgs)'].sum()
+        
+        # Tổng số pallet tính đến thời điểm hiện tại
         current_cumulative_pallets = pallet_counter['pallet_no'] - 1
-        write_packing_list_to_sheet(ws, df_for_pkl, container_id_num, current_cumulative_pallets)
+
+        # Cập nhật lệnh gọi hàm để truyền đủ 7 tham số
+        write_packing_list_to_sheet(
+            ws, 
+            df_for_pkl, 
+            container_id_num,
+            current_cumulative_pallets,
+            cumulative_totals['pcs'],
+            cumulative_totals['nw'],
+            cumulative_totals['gw']
+        )
+        # --- END: SỬA LỖI ---
         print(f"-> Đã ghi dữ liệu cho {sheet_title}.")
 
 
@@ -167,7 +191,7 @@ if __name__ == '__main__':
     INPUT_EXCEL_FILE = "C:\\Users\\emily\\Documents\\Zalo Received Files\\Chia cont - 2025(AutoRecovered).xlsx"
     
     # 2. Tên Sheet muốn xử lý (giữ nguyên)
-    SHEET_NAME = "28 Apr"
+    SHEET_NAME = "09 Jun"
 
     # 3. Tên hai công ty (giữ nguyên)
     COMPANY_1_NAME = "1.0"
@@ -180,7 +204,7 @@ if __name__ == '__main__':
     # 4. CHỌN THƯ MỤC LƯU FILE: Dán đường dẫn thư mục bạn muốn lưu vào đây.
     #    LƯU Ý: Trên Windows, hãy sử dụng dấu gạch chéo kép (\\) hoặc dấu gạch chéo đơn (/).
     #    Ví dụ: "C:\\Users\\emily\\Desktop" hoặc "C:/Users/emily/Documents/PackingLists"
-    OUTPUT_DIRECTORY = "C:\\Users\\emily\Downloads"
+    OUTPUT_DIRECTORY = "C:\\Users\\emily\\Downloads"
 
     # Script sẽ tự động tạo thư mục này nếu nó chưa tồn tại
     if not os.path.exists(OUTPUT_DIRECTORY):

@@ -1,192 +1,243 @@
-# test_script.py
-
-# ===================================================================
-# PHẦN 1: KẾT HỢP MÃ NGUỒN TỪ CÁC FILE CỦA BẠN
-# Bao gồm các định nghĩa lớp và hàm cần thiết từ optimizer.py và data_processor.py
-# ===================================================================
-
 import pandas as pd
 import math
-from itertools import combinations
-from typing import List, Tuple
+from copy import deepcopy
 
-# --- HẰNG SỐ CẤU HÌNH (từ optimizer.py) ---
-MAX_WEIGHT = 24000.0
-MAX_PALLETS = 20.0
-EPSILON = 1e-6
+# Các hàm render và helper được giữ nguyên
+# để tạo các dòng dữ liệu cho DataFrame cuối cùng.
 
-# --- CÁC LỚP ĐỐI TƯỢNG (từ optimizer.py) ---
-
-class Pallet:
-    """Đại diện cho một pallet hoặc một phần của pallet."""
-    def __init__(self, p_id, product_code, product_name, company, quantity, weight_per_pallet):
-        self.id = p_id
-        self.product_code = product_code
-        self.product_name = product_name
-        self.company = str(company)
-        self.quantity = float(quantity)
-        self.weight_per_pallet = float(weight_per_pallet)
-        self.total_weight = self.quantity * self.weight_per_pallet
-        self.is_combined = False
-        self.original_pallets = [self]
-        self.is_split = False
-        self.is_cross_ship = False
-
-    def __repr__(self):
-        type_info = ""
-        if self.is_combined: type_info = " [Combined]"
-        if self.is_split: type_info = " [Split]"
-        if self.is_cross_ship: type_info += " [Cross-Ship]"
-        return (f"Pallet(id={self.id}, code='{self.product_code}', qty={self.quantity:.2f}, "
-                f"wgt={self.total_weight:.2f}, Cty={self.company}){type_info}")
-
-# --- CÁC HÀM CẦN THIẾT ---
-
-# Hàm từ data_processor.py
-def load_and_prepare_pallets(filepath, sheet_name):
-    """
-    Đọc và làm sạch dữ liệu từ file Excel, trả về một danh sách các đối tượng Pallet.
-    """
+def _safe_float(value, default=0.0):
+    """Chuyển đổi giá trị sang float một cách an toàn."""
     try:
-        column_indices = [1, 2, 3, 10, 11]
-        column_names = ['product_code', 'product_name', 'company', 'weight_per_pallet', 'quantity']
-        df = pd.read_excel(
-            filepath, sheet_name=sheet_name, header=None, skiprows=5,
-            usecols=column_indices, names=column_names
-        )
-        df.dropna(subset=['product_name', 'company', 'weight_per_pallet', 'quantity'], how='any', inplace=True)
-        df['product_code'].fillna('Không có mã', inplace=True)
-        df['product_name'].fillna('Không có tên', inplace=True)
-        for col in ['weight_per_pallet', 'quantity']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df.dropna(subset=['weight_per_pallet', 'quantity'], inplace=True)
-        df = df[df['quantity'] > 0].copy()
-        df['company'] = df['company'].astype(str)
-        if df.empty:
-            return None, "Không tìm thấy dữ liệu hợp lệ."
-        pallets = [Pallet(f"P{i}", r['product_code'], r['product_name'], r['company'], r['quantity'], r['weight_per_pallet'])
-                   for i, r in df.iterrows()]
-        return pallets, None
-    except Exception as e:
-        return None, f"Lỗi xử lý file Excel: {e}"
+        return float(value) if value not in [None, ""] else default
+    except (ValueError, TypeError):
+        return default
 
-# Hàm cần test từ optimizer.py
-def create_combined_pallets(float_pallets: List[Pallet]) -> Tuple[List[Pallet], List[Pallet]]:
+def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_data_list):
     """
-    [SỬA] Logic gộp pallet được làm lại cho rõ ràng hơn.
-    Cố gắng gộp các pallet lẻ thành các pallet có tổng quantity gần bằng 1.0.
+    Tạo một dòng trong PKL cho một đơn vị pallet đơn (luôn có số lượng là 1).
     """
-    # [SỬA] Tách pallet theo công ty trước khi gộp
-    pallets_by_company = {}
-    for p in float_pallets:
-        pallets_by_company.setdefault(p.company, []).append(p)
+    key = str(item_content['product_code']) + '||' + str(item_content['product_name'])
+    raw_info = raw_data_map.get(key, {})
+    box_per_pallet_val = _safe_float(raw_info.get('BoxPerPallet'))
+    
+    # `Quantity (boxes)` = cột H (excel) * 1 
+    qty_boxes = box_per_pallet_val * 1.0
 
-    final_combined_pallets = []
-    final_remaining_pallets = []
+    row = {
+        'Item No.': pallet_counter['item_no'],
+        'Pallet': f"No.{pallet_counter['pallet_no']:03d}",
+        'Part Name': item_content['product_name'],
+        'Part No.': item_content['product_code'],
+        "Q'ty (boxes)": qty_boxes,
+        # Các cột khác có thể được thêm vào nếu cần
+    }
+    pkl_data_list.append(row)
+    pallet_counter['item_no'] += 1
+    pallet_counter['pallet_no'] += 1
 
-    for company, company_float_pallets in pallets_by_company.items():
-        pallets_to_process = sorted(company_float_pallets, key=lambda p: p.quantity, reverse=True)
-        combined_pallets = []
-        used_indices = set()
+def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pkl_data_list, block_quantity):
+    """
+    Tạo một khối dòng trong PKL cho một pallet gộp.
+    `block_quantity` là tỉ lệ của pallet (ví dụ: 1.0 cho phần nguyên, 0.79 cho phần lẻ).
+    """
+    is_first_item_in_group = True
+    for item in item_content['items']:
+        key_item = str(item['product_code']) + '||' + str(item['product_name'])
+        raw_info_item = raw_data_map.get(key_item, {})
+        
+        original_item_qty = _safe_float(item.get('quantity'))
+        effective_pallet_qty = original_item_qty * block_quantity
+        box_per_pallet_item = _safe_float(raw_info_item.get('BoxPerPallet'))
 
-        for i in range(len(pallets_to_process)):
-            if i in used_indices:
-                continue
+        # `Quantity (boxes)` = cột H (excel) * tỉ lệ pallet 
+        qty_boxes_item = effective_pallet_qty * box_per_pallet_item
+
+        row = {
+            'Item No.': pallet_counter['item_no'] if is_first_item_in_group else '',
+            'Pallet': f"No.{pallet_counter['pallet_no']:03d}" if is_first_item_in_group else '',
+            'Part Name': item['product_name'],
+            'Part No.': item['product_code'],
+            "Q'ty (boxes)": qty_boxes_item,
+             # Các cột khác có thể được thêm vào nếu cần
+        }
+        pkl_data_list.append(row)
+        is_first_item_in_group = False
+
+    pallet_counter['item_no'] += 1
+    pallet_counter['pallet_no'] += 1
+
+# --- HÀM CHÍNH: _prepare_data_for_pkl ---
+# Hàm này dàn dựng toàn bộ logic bạn đã yêu cầu.
+def _prepare_data_for_pkl(container_data, raw_data_map, pallet_counter):
+    """
+    Chuẩn bị DataFrame cho một container duy nhất, áp dụng logic tách pallet
+    theo phần nguyên và phần lẻ trước khi tạo dòng.
+    """
+    pkl_data_list = []
+    fractional_waiting_area = []
+    EPSILON = 1e-6
+
+    # Sắp xếp để xử lý pallet gộp có phần lẻ đặc biệt (.9) trước
+    contents = sorted(container_data.get('contents', []), key=lambda x: x['type'] != 'CombinedPallet')
+
+    # BƯỚC 1: TÁCH PHẦN NGUYÊN VÀ GOM PHẦN LẺ
+    for content in contents:
+        original_quantity = _safe_float(content.get('quantity'))
+        
+        # Tách chính xác phần nguyên và phần lẻ 
+        integer_part = math.floor(original_quantity)
+        fractional_part = original_quantity - integer_part
+
+        # XỬ LÝ PHẦN NGUYÊN (1, 2, 3... pallets)
+        if integer_part > 0:
+            if content['type'] == 'SinglePallet':
+                for _ in range(integer_part):
+                    # Mỗi pallet nguyên tạo 1 dòng riêng 
+                    _render_single_pallet_unit(content, raw_data_map, pallet_counter, pkl_data_list)
+            elif content['type'] == 'CombinedPallet':
+                for _ in range(integer_part):
+                    # Mỗi pallet gộp nguyên tạo 1 khối riêng, với tỉ lệ là 1.0
+                    _render_combined_pallet_block(content, raw_data_map, pallet_counter, pkl_data_list, 1.0)
+
+        # XỬ LÝ PHẦN LẺ (0.1 -> 0.9 pallet)
+        if fractional_part > EPSILON:
+            frac_pallet_unit = deepcopy(content)
+            frac_pallet_unit['quantity'] = fractional_part
             
-            best_group = [pallets_to_process[i]]
-            best_sum = pallets_to_process[i].quantity
+            is_combined = content['type'] == 'CombinedPallet'
             
-            if best_sum < 1.0 - EPSILON:
-                remaining_to_check = [p for j, p in enumerate(pallets_to_process) if j > i and j not in used_indices]
-                
-                for k in range(1, len(remaining_to_check) + 1):
-                    for combo in combinations(remaining_to_check, k):
-                        temp_group = [pallets_to_process[i]] + list(combo)
-                        temp_sum = sum(p.quantity for p in temp_group)
-                        temp_wgt = sum(p.total_weight for p in temp_group)
-                        
-                        if temp_sum <= 1.0 + EPSILON and temp_wgt <= MAX_WEIGHT:
-                            if temp_sum > best_sum:
-                                best_sum = temp_sum
-                                best_group = temp_group
+            # Pallet gộp lẻ (ví dụ 2.9 pallet thì phần 0.9) sẽ được xử lý ngay
+            if is_combined:
+                _render_combined_pallet_block(frac_pallet_unit, raw_data_map, pallet_counter, pkl_data_list, fractional_part)
+            else:
+                # Pallet đơn lẻ được đưa vào hàng chờ để gộp 
+                fractional_waiting_area.append(frac_pallet_unit)
+
+    # BƯỚC 2: GOM NHÓM VÀ HIỂN THỊ CÁC PHẦN LẺ TỪ HÀNG CHỜ
+    fractional_waiting_area.sort(key=lambda p: p['quantity'], reverse=True)
+    
+    while fractional_waiting_area:
+        main_pallet_frac = fractional_waiting_area.pop(0)
+        current_group = [main_pallet_frac]
+        current_total_quantity = main_pallet_frac['quantity']
         
-            if len(best_group) > 1:
-                indices_to_mark = set()
-                for p_in_group in best_group:
-                    for idx, p_original in enumerate(pallets_to_process):
-                        if p_in_group.id == p_original.id:
-                            indices_to_mark.add(idx)
-                            break
-                used_indices.update(indices_to_mark)
-                
-                total_qty = sum(p.quantity for p in best_group)
-                total_wgt = sum(p.total_weight for p in best_group)
-                
-                new_code = "+".join(sorted(list(set(p.product_code for p in best_group))))
-                new_name = "+".join(sorted(list(set(p.product_name for p in best_group))))
-                
-                combined_p = Pallet(
-                    f"C_{'+'.join([p.id for p in best_group])}",
-                    new_code, new_name, best_group[0].company,
-                    total_qty, total_wgt / total_qty if total_qty > 0 else 0
-                )
-                combined_p.is_combined = True
-                combined_pallets.append(combined_p)
+        remaining_indices_to_keep = []
+        # Tìm các pallet lẻ khác để ghép vào sao cho tổng <= 0.9
+        for i, other_pallet_frac in enumerate(fractional_waiting_area):
+            if current_total_quantity + other_pallet_frac['quantity'] <= 0.9 + EPSILON:
+                current_group.append(other_pallet_frac)
+                current_total_quantity += other_pallet_frac['quantity']
+            else:
+                remaining_indices_to_keep.append(i)
         
-        company_remaining = [p for i, p in enumerate(pallets_to_process) if i not in used_indices]
-        final_combined_pallets.extend(combined_pallets)
-        final_remaining_pallets.extend(company_remaining)
+        fractional_waiting_area = [fractional_waiting_area[i] for i in remaining_indices_to_keep]
+
+        # Tạo một "pallet gộp giả" từ các phần lẻ đã gom
+        group_items = []
+        for pallet_part in current_group:
+            # Tỷ lệ của sản phẩm con trong pallet gộp mới = (số lượng pallet lẻ của nó) / (tổng số lượng của cả nhóm)
+            group_items.append({
+                "product_code": pallet_part['product_code'],
+                "product_name": pallet_part['product_name'],
+                "company": pallet_part['company'],
+                "quantity": pallet_part['quantity'] / current_total_quantity,
+            })
         
-    return final_combined_pallets, final_remaining_pallets
+        pseudo_content = {'type': 'CombinedPallet', 'items': group_items}
+        # Render khối đã gộp với tổng tỉ lệ của khối
+        _render_combined_pallet_block(pseudo_content, raw_data_map, pallet_counter, pkl_data_list, current_total_quantity)
 
-# ===================================================================
-# PHẦN 2: KỊCH BẢN KIỂM THỬ
-# ===================================================================
-
-def run_test_with_real_data():
-    print("==========================================================")
-    print("  BẮT ĐẦU TEST HÀM 'create_combined_pallets' VỚI DỮ LIỆU THẬT")
-    print("==========================================================")
-
-    # 1. Lấy thông tin file từ người dùng
-    filepath = input(">> Vui lòng nhập đường dẫn đến file Excel của bạn: ")
-    sheet_name = input(">> Vui lòng nhập tên sheet chứa dữ liệu: ")
-
-    # 2. Đọc và chuẩn bị dữ liệu
-    print(f"\n--- Đang đọc dữ liệu từ '{filepath}' (Sheet: '{sheet_name}')...")
-    all_pallets, error = load_and_prepare_pallets(filepath, sheet_name)
-
-    if error:
-        print(f"\n!!! LỖI: {error}")
-        return
-
-    # 3. Lọc ra các pallet lẻ (float pallets) để test
-    float_pallets = [p for p in all_pallets if abs(p.quantity - round(p.quantity)) >= EPSILON]
-
-    if not float_pallets:
-        print("\n--- Không tìm thấy pallet lẻ (float pallets) nào trong dữ liệu để tiến hành gộp.")
-        return
-        
-    print(f"\n--- Tìm thấy {len(float_pallets)} pallet lẻ. Bắt đầu gộp...")
-    print("--- Danh sách pallet lẻ đầu vào:")
-    for p in sorted(float_pallets, key=lambda p: (p.company, p.quantity), reverse=True):
-        print(f"  - {p}")
-
-    # 4. Gọi hàm cần test
-    combined_pallets, remaining_pallets = create_combined_pallets(float_pallets)
-
-    # 5. In kết quả chi tiết
-    print("\n-------------------- KẾT QUẢ --------------------")
-    print(f"\n>>> SỐ PALLET ĐÃ GỘP THÀNH CÔNG: {len(combined_pallets)}")
-    for p in combined_pallets:
-        print(f"  - {p}")
-
-    print(f"\n>>> SỐ PALLET LẺ CÒN LẠI (KHÔNG GỘP ĐƯỢC): {len(remaining_pallets)}")
-    for p in remaining_pallets:
-        print(f"  - {p}")
-    print("==================== TEST KẾT THÚC ====================")
+    return pd.DataFrame(pkl_data_list)
 
 
-# Chạy kịch bản test khi file này được thực thi
-if __name__ == "__main__":
-    run_test_with_real_data()
+
+def run_test():
+    """
+    Hàm chính để chạy kịch bản test.
+    """
+    print("--- BẮT ĐẦU KỊCH BẢN TEST ---")
+
+    # 1. Dữ liệu thô giả lập (tương ứng dữ liệu từ file Excel)
+    #    Định dạng: 'product_code||product_name': {'BoxPerPallet': value}
+    raw_data_map = {
+        'P001||Sản phẩm A': {'BoxPerPallet': 100.0},
+        'P002||Sản phẩm B': {'BoxPerPallet': 50.0},
+        'P003||Sản phẩm C': {'BoxPerPallet': 120.0},
+        'P004||Sản phẩm D (gộp)': {'BoxPerPallet': 80.0},
+        'P005||Sản phẩm E (gộp)': {'BoxPerPallet': 90.0},
+        'P006||Sản phẩm F': {'BoxPerPallet': 200.0},
+    }
+
+    # 2. Dữ liệu đầu vào giả lập (kết quả sau khi tối ưu hóa)
+    #    Đây là dữ liệu mà hàm _prepare_data_for_pkl sẽ xử lý.
+    optimized_container_data = {
+        'id': 'Cont_01',
+        'contents': [
+            # KỊCH BẢN 1: Integer Pallet (2 pallet)
+            # -> Sẽ tách thành 2 dòng riêng biệt, mỗi dòng 100 boxes.
+            {'type': 'SinglePallet', 'product_code': 'P001', 'product_name': 'Sản phẩm A', 'quantity': 2.0, 'company': 'C1'},
+
+            # KỊCH BẢN 2: Single Float Pallet (3.7 pallet)
+            # -> Tách thành: 3 dòng pallet nguyên (50 boxes mỗi dòng)
+            # -> và 1 phần lẻ 0.7 pallet sẽ vào hàng chờ.
+            {'type': 'SinglePallet', 'product_code': 'P002', 'product_name': 'Sản phẩm B', 'quantity': 3.7, 'company': 'C1'},
+
+            # KỊCH BẢN 3: Single Float Pallet khác (1.2 pallet)
+            # -> Tách thành: 1 dòng pallet nguyên (120 boxes)
+            # -> và 1 phần lẻ 0.2 pallet vào hàng chờ.
+            # -> Phần 0.7 và 0.2 sẽ được gộp thành 1 pallet gộp 0.9.
+            {'type': 'SinglePallet', 'product_code': 'P003', 'product_name': 'Sản phẩm C', 'quantity': 1.2, 'company': 'C2'},
+            
+            # KỊCH BẢN 4: Single Float Pallet không thể gộp (0.5 pallet)
+            # -> Phần 0.5 pallet này sẽ tạo thành 1 pallet gộp riêng vì không ghép được với nhóm 0.7+0.2
+            {'type': 'SinglePallet', 'product_code': 'P006', 'product_name': 'Sản phẩm F', 'quantity': 0.5, 'company': 'C2'},
+
+            # KỊCH BẢN 5: Combined Pallet (1.9 pallet)
+            # -> Tách thành: 1 khối pallet gộp nguyên (tỉ lệ 1.0)
+            # -> và 1 khối pallet gộp lẻ (tỉ lệ 0.9) được xử lý ngay.
+            {
+                'type': 'CombinedPallet',
+                'quantity': 1.9,
+                'items': [
+                    {'product_code': 'P004', 'product_name': 'Sản phẩm D (gộp)', 'quantity': 0.6, 'company': 'C1'},
+                    {'product_code': 'P005', 'product_name': 'Sản phẩm E (gộp)', 'quantity': 0.4, 'company': 'C1'},
+                ],
+            },
+        ]
+    }
+
+    # 3. Khởi tạo bộ đếm pallet
+    pallet_counter = {'item_no': 1, 'pallet_no': 1}
+
+    # 4. Gọi hàm chính để xử lý
+    print("\nĐang gọi hàm _prepare_data_for_pkl...")
+    result_df = _prepare_data_for_pkl(optimized_container_data, raw_data_map, pallet_counter)
+    print("...Hoàn thành.")
+
+    # 5. In kết quả
+    print("\n--- KẾT QUẢ PACKING LIST (DẠNG DATAFRAME) ---")
+    
+    # Hiển thị tất cả các dòng và cột
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', 1000)
+
+    print(result_df)
+    
+    print("\n--- DIỄN GIẢI KẾT QUẢ ---")
+    print("1. Pallet P001 (2.0): Tách thành 2 dòng (Pallet No.001, No.002), mỗi dòng có 100.0 boxes.")
+    print("2. Pallet P002 (3.7): Tách thành 3 dòng nguyên (Pallet No.003, No.004, No.005), mỗi dòng 50.0 boxes. Phần 0.7 vào hàng chờ.")
+    print("3. Pallet P003 (1.2): Tách thành 1 dòng nguyên (Pallet No.006) 120.0 boxes. Phần 0.2 vào hàng chờ.")
+    print("4. Pallet gộp (1.9): Tách thành 1 khối nguyên (Pallet No.007) và 1 khối lẻ 0.9 (Pallet No.008).")
+    print("   - Khối nguyên (No.007): P004 có 80*0.6=48 boxes, P005 có 90*0.4=36 boxes.")
+    print("   - Khối lẻ (No.008): P004 có 80*0.6*0.9=43.2 boxes, P005 có 90*0.4*0.9=32.4 boxes.")
+    print("5. Hàng chờ được xử lý:")
+    print("   - Nhóm gộp 1 (Pallet No.009): Gộp P002 (0.7) và P003 (0.2). Tổng là 0.9.")
+    print("     - P002 có 50 * (0.7/0.9) * 0.9 = 35.0 boxes.")
+    print("     - P003 có 120 * (0.2/0.9) * 0.9 = 24.0 boxes.")
+    print("   - Nhóm gộp 2 (Pallet No.010): P006 (0.5) đứng một mình. Có 200 * 0.5 = 100.0 boxes.")
+
+
+# Chạy test
+if __name__ == '__main__':
+    run_test()
