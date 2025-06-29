@@ -2,6 +2,7 @@
 import pandas as pd
 import math
 import warnings # Import the warnings library
+import re 
 
 # --- HIDE HARMLESS WARNINGS FROM openpyxl ---
 from openpyxl.utils.exceptions import InvalidFileException
@@ -141,7 +142,16 @@ def load_and_map_raw_data_for_pkl(filepath, sheet_name):
         
         # 3. Chuyển DataFrame đã được làm sạch thành một dictionary để tra cứu nhanh
         raw_data_map = df_raw_unique.set_index('lookup_key').to_dict('index')
-        
+        for key in raw_data_map:
+            for field in ['QtyPerBox', 'BoxPerPallet', 'WeightPerPc_Raw']:
+                if field in raw_data_map[key]:
+                   value = raw_data_map[key][field]
+                   if value in ["", None]:
+                      raw_data_map[key][field] = 0  # Gán giá trị mặc định
+                   elif isinstance(value, str):
+                # Loại bỏ ký tự đặc biệt
+                        cleaned = re.sub(r'[^\d.]', '', value)
+                        raw_data_map[key][field] = cleaned if cleaned else 0
         print(f"[DATA_PROCESSOR] Successfully created raw data map with {len(raw_data_map)} unique items.")
         return raw_data_map, None
     
