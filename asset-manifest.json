@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/mom-s-project/static/js/main.67a0006d.js",
+    "main.js": "/mom-s-project/static/js/main.b0ddcbf4.js",
     "index.html": "/mom-s-project/index.html",
-    "main.67a0006d.js.map": "/mom-s-project/static/js/main.67a0006d.js.map"
+    "main.b0ddcbf4.js.map": "/mom-s-project/static/js/main.b0ddcbf4.js.map"
   },
   "entrypoints": [
-    "static/js/main.67a0006d.js"
+    "static/js/main.b0ddcbf4.js"
   ]
 }
