@@ -21,7 +21,7 @@ try:
         load_and_map_raw_data_for_pkl
     )
     from app import (
-        _prepare_data_for_pkl,
+        _generate_dataframe_for_container,
         write_packing_list_to_sheet
     )
     print("INFO: Đã import thành công các hàm từ data_processor.py và app.py.")
@@ -147,7 +147,7 @@ def run_packing_list_generation(optimized_results, original_filepath, sheet_name
         ws = wb.create_sheet(title=sheet_title)
 
         # Chuẩn bị dữ liệu và ghi vào sheet
-        df_for_pkl = _prepare_data_for_pkl(container_data, raw_data_map, pallet_counter)
+        df_for_pkl = _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter)
         
         # --- START: SỬA LỖI ---
         # Cập nhật các giá trị tổng dồn sau khi xử lý mỗi container

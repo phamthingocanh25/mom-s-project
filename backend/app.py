@@ -12,6 +12,7 @@ from openpyxl.styles import Font, Border, Side, Alignment,PatternFill
 from openpyxl.utils import get_column_letter, rows_from_range, cols_from_range
 import math
 from copy import deepcopy
+import datetime
 
 
 # --- IMPORT CÁC MODULE XỬ LÝ ---
@@ -76,7 +77,6 @@ def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_d
         'G.W (kgs)': gw_kgs,
         'MEAS. (m)': "1.15*1.15*0.8",
         'CBM': cbm,
-        'Pallet Ratio': 1.0, # Tỉ lệ luôn là 1.0 cho pallet đơn nguyên
         "Q'ty/box": qty_per_box_val,
         "Box/Pallet": box_per_pallet_val,
         "Box Spec": raw_info.get('BoxSpec', ''),
@@ -86,21 +86,17 @@ def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_d
     pallet_counter['item_no'] += 1
     pallet_counter['pallet_no'] += 1
 
-def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pkl_data_list, block_quantity):
+def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pkl_data_list, total_block_ratio): # <<-- CHANGED: Added total_block_ratio
     """
     Tạo một khối dòng trong PKL cho một pallet gộp (đủ hoặc lẻ).
-    Hàm này xử lý cả pallet gộp nguyên (block_quantity=1.0), pallet gộp lẻ (block_quantity < 1.0)
-    và các pallet đơn lẻ được gom nhóm lại.
-    *** ĐÃ ĐƯỢC CẬP NHẬT ĐỂ CHUẨN HÓA TỈ LỆ ***
+    *** ĐÃ ĐƯỢC CẬP NHẬT ĐỂ CHUẨN HÓA TỈ LỆ VÀ THÊM TỔNG TỈ LỆ ***
     """
     total_nw_group = 0
     total_boxes_group = 0
     items_calculated = []
 
-    # BƯỚC MỚI: TÍNH TỔNG TỈ LỆ GỐC TRONG PALLET ĐỂ CHUẨN HÓA
-    # Điều này để xử lý trường hợp quantity của các item con lớn hơn 1.0
     total_original_proportion = sum(_safe_float(item.get('quantity', 0)) for item in item_content['items'])
-    if total_original_proportion == 0:  # Tránh lỗi chia cho 0
+    if total_original_proportion == 0:
         total_original_proportion = 1.0
 
     # BƯỚC 1: TÍNH TOÁN THÔNG SỐ CHO TỪNG SẢN PHẨM THÀNH PHẦN
@@ -108,21 +104,15 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
         key_item = str(item['product_code']) + '||' + str(item['product_name'])
         raw_info_item = raw_data_map.get(key_item, {})
         
-        # Lấy tỉ lệ gốc của sản phẩm
         original_item_proportion = _safe_float(item.get('quantity'))
-        
-        # Chuẩn hóa tỉ lệ của sản phẩm về thang đo 1.0 (tổng các item con là 1.0)
         normalized_proportion = original_item_proportion / total_original_proportion
-        
-        # Tỉ lệ pallet thực tế của sản phẩm này trong khối đang xét
-        # Ví dụ: item chiếm 50% pallet, khối này là 0.8 pallet -> tỉ lệ thực tế là 0.5 * 0.8 = 0.4
-        individual_pallet_ratio = normalized_proportion * block_quantity
+        # Sử dụng total_block_ratio thay vì block_quantity để tính toán
+        individual_pallet_ratio = normalized_proportion * total_block_ratio
 
         qty_per_box_item = _safe_float(raw_info_item.get('QtyPerBox'))
-        box_per_pallet_item = _safe_float(raw_info_item.get('BoxPerPallet')) # Cột H
+        box_per_pallet_item = _safe_float(raw_info_item.get('BoxPerPallet'))
         weight_per_pc_raw_item = _safe_float(raw_info_item.get('WeightPerPc_Raw'))
 
-        # Số thùng được tính dựa trên tỉ lệ thực tế của sản phẩm
         qty_boxes_item = individual_pallet_ratio * box_per_pallet_item
         qty_pcs_item = qty_boxes_item * qty_per_box_item
         w_pc_kgs_item = (weight_per_pc_raw_item / qty_per_box_item) if qty_per_box_item > 0 else 0
@@ -135,8 +125,7 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
             'qty_pcs': qty_pcs_item,
             'w_pc_kgs': w_pc_kgs_item,
             'nw_kgs': nw_kgs_item,
-            'raw_info': raw_info_item,
-            'pallet_ratio': individual_pallet_ratio # Sử dụng tỉ lệ đã được tính toán chính xác
+            'raw_info': raw_info_item
         })
 
         total_nw_group += nw_kgs_item
@@ -144,7 +133,7 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
 
     # BƯỚC 2: TÍNH TOÁN TỔNG CHO CẢ KHỐI
     gw_kgs_group = total_nw_group + (total_boxes_group * 0.4) + 50
-    cbm_group = block_quantity * 1.15 * 1.15 * 0.8
+    cbm_group = total_block_ratio * 1.15 * 1.15 * 0.8
 
     # BƯỚC 3: GHI DỮ LIỆU VÀO DANH SÁCH
     is_first_item_in_group = True
@@ -161,7 +150,6 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
             'G.W (kgs)': gw_kgs_group if is_first_item_in_group else 0,
             'MEAS. (m)': "1.15*1.15*0.8" if is_first_item_in_group else '',
             'CBM': cbm_group if is_first_item_in_group else 0,
-            'Pallet Ratio': item_data['pallet_ratio'],
             "Q'ty/box": item_data['raw_info'].get('QtyPerBox', ''),
             "Box/Pallet": item_data['raw_info'].get('BoxPerPallet', ''),
             "Box Spec": item_data['raw_info'].get('BoxSpec', ''),
@@ -169,110 +157,137 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
         pkl_data_list.append(row)
         is_first_item_in_group = False
     
-    # Cả khối gộp chỉ tăng số thứ tự item và pallet lên 1
     pallet_counter['item_no'] += 1
     pallet_counter['pallet_no'] += 1
 
-
-def _prepare_data_for_pkl(container_data, raw_data_map, pallet_counter):
+def _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter):
     """
-    Chuẩn bị DataFrame cho một container với logic phân loại mới:
-    1. Tách pallet thành 3 giỏ: Integer, Float không ghép, Float có thể ghép
-    2. Xử lý từng giỏ theo yêu cầu
+    Tạo DataFrame cho Packing List của một container duy nhất.
+    PHIÊN BẢN 3 (Theo phản hồi mới nhất):
+    1. Duyệt qua TỪNG DÒNG MÃ HÀNG trong kết quả tối ưu hóa.
+    2. Tách phần nguyên/lẻ của SỐ LƯỢNG PALLET CỦA TỪNG MÃ HÀNG ĐÓ.
+    3. Phần nguyên tạo thành các pallet ĐƠN, NGUYÊN (tỉ lệ 1.0).
+    4. Tất cả các phần lẻ được gom vào "rổ chung" và xử lý bằng FFD.
     """
     pkl_data_list = []
-    EPSILON = 1e-6
+    unprocessed_fractions = [] # <<-- "Rổ chung" chứa tất cả các mã hàng lẻ
+    EPSILON = 1e-6 # Hằng số nhỏ để so sánh số thực
 
-    # 1. Khởi tạo 3 giỏ phân loại
-    integer_basket = []       # Chứa pallet nguyên (1.0, 2.0,...)
-    non_merge_float_basket = []  # Phần lẻ của CombinedPallet (≤1.0)
-    mergeable_float_basket = []  # Phần lẻ của SinglePallet (≤1.0)
+    # --- BƯỚC 1: TÁCH PHẦN NGUYÊN & LẺ TỪ TỪNG DÒNG SẢN PHẨM ---
+    for content_block in container_data.get('contents', []):
+        block_type = content_block.get('type')
 
-    # 2. Phân loại pallet vào các giỏ
-    for content in container_data.get('contents', []):
-        original_quantity = _safe_float(content.get('quantity'))
-        
-        # Tính phần nguyên và phần lẻ
-        integer_part = math.floor(original_quantity)
-        fractional_part = original_quantity - integer_part
+        items_to_process = []
+        # Thống nhất logic xử lý: coi Pallet Đơn như một Pallet Gộp có 1 item
+        if block_type == 'SinglePallet':
+            items_to_process.append({
+                "product_code": content_block['product_code'],
+                "product_name": content_block['product_name'],
+                "company": content_block['company'],
+                "quantity": content_block.get('quantity', 0)
+            })
+        else: # CombinedPallet
+            items_to_process = content_block.get('items', [])
 
-        # Xử lý phần nguyên
-        if integer_part > 0:
-            for _ in range(int(integer_part)):
-                integer_basket.append({
-                    'type': content['type'],
-                    'data': deepcopy(content),
-                    'quantity': 1.0  # Mỗi pallet nguyên là 1 đơn vị
-                })
+        # Xử lý từng dòng sản phẩm (item) bên trong khối
+        for item in items_to_process:
+            # Lấy số pallet của chính item này (ví dụ: 2.62)
+            item_total_pallet = _safe_float(item.get('quantity'))
+            if item_total_pallet < EPSILON:
+                continue
+            
+            integer_part = math.floor(item_total_pallet)
+            fractional_part = item_total_pallet - integer_part
 
-        # Xử lý phần lẻ
-        if fractional_part > EPSILON:
-            if content['type'] == 'CombinedPallet':
-                non_merge_float_basket.append({
-                    'type': 'CombinedPallet',
-                    'data': deepcopy(content),
-                    'quantity': fractional_part
-                })
-            else:  # SinglePallet
-                mergeable_float_basket.append({
+            # 1a. Xử lý phần NGUYÊN: Tạo ra N pallet ĐƠN, NGUYÊN
+            if integer_part > 0:
+                # Tạo một "khối đơn" ảo chỉ chứa thông tin của item này
+                pseudo_single_pallet_block = {
                     'type': 'SinglePallet',
-                    'data': deepcopy(content),
-                    'quantity': fractional_part
+                    'product_code': item['product_code'],
+                    'product_name': item['product_name'],
+                    'company': item['company']
+                    # Các thông tin khác như weight, cbm sẽ được tra cứu trong hàm render
+                }
+                # Tạo ra N pallet NGUYÊN (N dòng trên PKL), mỗi pallet là 1 pallet ĐƠN
+                for _ in range(int(integer_part)):
+                    _render_single_pallet_unit(pseudo_single_pallet_block, raw_data_map, pallet_counter, pkl_data_list)
+            
+            # 1b. Xử lý phần LẺ: Thêm vào "rổ chung" để gom sau
+            if fractional_part > EPSILON:
+                unprocessed_fractions.append({
+                    "product_code": item['product_code'],
+                    "product_name": item['product_name'],
+                    "company": item['company'],
+                    "quantity": fractional_part # Tỉ lệ pallet lẻ (ví dụ: 0.62)
                 })
 
-    # 3. Xử lý từng giỏ
-    # 3.1. Giỏ Integer - Xuất trước
-    for item in integer_basket:
-        if item['type'] == 'SinglePallet':
-            _render_single_pallet_unit(item['data'], raw_data_map, pallet_counter, pkl_data_list)
-        else:  # CombinedPallet
-            _render_combined_pallet_block(item['data'], raw_data_map, pallet_counter, pkl_data_list, 1.0)
-
-    # 3.2. Giỏ Float không ghép - Xuất tiếp
-    for item in non_merge_float_basket:
-        _render_combined_pallet_block(item['data'], raw_data_map, pallet_counter, pkl_data_list, item['quantity'])
-
-    # 3.3. Giỏ Float có thể ghép - Gom nhóm trước khi xuất
-    # Sắp xếp giảm dần để ưu tiên ghép các phần lớn trước
-    mergeable_float_basket.sort(key=lambda x: x['quantity'], reverse=True)
+    # --- BƯỚC 2: GOM CÁC MÃ HÀNG LẺ TRONG "RỔ CHUNG" BẰNG THUẬT TOÁN FFD (Giữ nguyên) ---
+    # Sắp xếp các mã hàng lẻ theo tỉ lệ giảm dần (First Fit Decreasing)
+    unprocessed_fractions.sort(key=lambda x: x['quantity'], reverse=True)
     
-    while mergeable_float_basket:
-        # Lấy phần tử lớn nhất làm nhóm chính
-        current_group = [mergeable_float_basket.pop(0)]
-        current_total = current_group[0]['quantity']
+    while unprocessed_fractions:
+        # Bắt đầu một pallet gộp mới với mã hàng lẻ lớn nhất
+        current_group = [unprocessed_fractions.pop(0)]
+        current_total_ratio = current_group[0]['quantity']
         
-        # Tìm các phần tử có thể ghép vào nhóm
+        # Tham lam tìm các mã hàng khác để lấp đầy pallet (không vượt quá 1.0)
         i = 0
-        while i < len(mergeable_float_basket):
-            if current_total + mergeable_float_basket[i]['quantity'] <= 1.0 + EPSILON:
-                current_total += mergeable_float_basket[i]['quantity']
-                current_group.append(mergeable_float_basket.pop(i))
+        while i < len(unprocessed_fractions):
+            if current_total_ratio + unprocessed_fractions[i]['quantity'] <= 1.0 + EPSILON:
+                item_to_add = unprocessed_fractions.pop(i)
+                current_total_ratio += item_to_add['quantity']
+                current_group.append(item_to_add)
             else:
                 i += 1
         
-        # Tạo pseudo combined pallet cho nhóm
-        group_items = []
-        for item in current_group:
-            group_items.append({
-                "product_code": item['data']['product_code'],
-                "product_name": item['data']['product_name'],
-                "company": item['data']['company'],
-                "quantity": item['quantity'] / current_total,
-            })
+        # Tạo một pallet gộp "ảo" từ nhóm vừa tạo
+        pseudo_combined_pallet = {'type': 'CombinedPallet', 'items': current_group}
         
-        pseudo_content = {
-            'type': 'CombinedPallet',
-            'items': group_items
-        }
+        # Render khối pallet gộp "ảo" này ra PKL
         _render_combined_pallet_block(
-            pseudo_content, 
+            pseudo_combined_pallet, 
             raw_data_map, 
             pallet_counter, 
             pkl_data_list, 
-            current_total
+            total_block_ratio=current_total_ratio
         )
 
+    if not pkl_data_list:
+        return None
     return pd.DataFrame(pkl_data_list)
+def create_packing_list_data(final_optimized_containers, raw_data_map):
+    """
+    Điều phối việc tạo dữ liệu Packing List từ kết quả tối ưu hóa cuối cùng.
+    Hàm này sẽ gọi _generate_dataframe_for_container để thực hiện logic FFD.
+    """
+    print("[BACKEND] Bắt đầu quy trình tạo dữ liệu Packing List (logic FFD)...")
+    processed_dfs_for_pkl = {}
+    
+    # Khởi tạo bộ đếm pallet và item, đảm bảo tính liên tục qua các container
+    pallet_counter = {'item_no': 1, 'pallet_no': 1}
+
+    # Sắp xếp các container theo ID để đảm bảo thứ tự
+    final_optimized_containers.sort(key=lambda x: x['container_id'])
+
+    for container_data in final_optimized_containers:
+        container_id = container_data['container_id']
+        print(f"  - Đang xử lý Container ID: {container_id}")
+
+        # ====> GỌI HÀM ĐÃ ĐƯỢC THAY THẾ <====
+        # Logic phức tạp về FFD đã được đóng gói hoàn toàn trong hàm này
+        df_for_pkl = _generate_dataframe_for_container(
+            container_data, 
+            raw_data_map, 
+            pallet_counter
+        )
+        
+        if df_for_pkl is not None and not df_for_pkl.empty:
+            processed_dfs_for_pkl[container_id] = df_for_pkl
+        
+    print("[BACKEND] Đã hoàn tất tạo dữ liệu Packing List.")
+    return processed_dfs_for_pkl
+
 
 def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_count,cumulative_pcs, cumulative_nw, cumulative_gw):
     """
@@ -315,14 +330,14 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
     ws.sheet_view.showGridLines = False
     
     column_widths = {
-         'D': 10, 'E': 10, 'F': 20, 'G': 20,
-        'H': 12, 'I': 12, 'J': 12, 'K': 12, 'L': 12, 'M': 18, 'N': 12, 'O': 12, 'P': 18
+         'D': 10, 'E': 10, 'F': 35, 'G': 35,
+        'H': 12, 'I': 12, 'J': 12, 'K': 12, 'L': 12, 'M': 18, 'N': 12, 'O': 12, 'P': 12, 'Q': 12, 'R':18
     }
     for col, width in column_widths.items():
         ws.column_dimensions[col].width = width
 
     # --- 3. TẠO TIÊU ĐỀ CHÍNH "PACKING LIST" ---
-    ws.merge_cells('D1:O1')
+    ws.merge_cells('D1:P1')
     title_cell = ws['D1']
     title_cell.value = "PACKING LIST"
     title_cell.font = font_main_title
@@ -330,7 +345,6 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
     ws.row_dimensions[1].height = 65
 
     # --- 4. TẠO CÁC Ô THÔNG TIN (SELLER, BUYER, INVOICE, FROM/TO) ---
-    # (Phần này không thay đổi và được giữ nguyên)
     ws.merge_cells('D2:H2')
     ws.merge_cells('D3:H10')
     apply_border_to_range('D2:H10', thin_border)
@@ -355,37 +369,32 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
     apply_border_to_range('D11:H18', thin_border)
     buyer_header_cell = ws['D11']
     buyer_header_cell.value = "BUYER"
-    buyer_header_cell = ws['D11']
     buyer_header_cell.font = font_box_header
     buyer_header_cell.alignment = Alignment(horizontal='left', vertical='top')
     buyer_content_cell = ws['D12']
-    buyer_content = ("  \n"
-                      " \n"
-                      " \n")
+    buyer_content = ("  \n" " \n" " \n")
     buyer_content_cell.value = buyer_content
     buyer_content_cell.font = font_content
     buyer_content_cell.alignment = align_top_left
     
-    ws.merge_cells('I2:O2')
-    ws.merge_cells('I3:O10')
-    apply_border_to_range('I2:O10', thin_border)
+    ws.merge_cells('I2:P2')
+    ws.merge_cells('I3:P10')
+    apply_border_to_range('I2:P10', thin_border)
     invoice_header_cell = ws['I2']
     invoice_header_cell.value = "INVOICE NO. & DATE:"
     invoice_header_cell.font = font_box_header
     invoice_header_cell.alignment = Alignment(horizontal='left', vertical='top')
     invoice_content_cell = ws['I3']
-    invoice_content = ("  \n"
-                      " \n"
-                      " \n")
+    invoice_content = ("  \n" " \n" " \n")
     invoice_content_cell.value = invoice_content
     invoice_content_cell.font = font_content
     invoice_content_cell.alignment = align_top_left
 
-    apply_border_to_range('I11:O18', thin_border)
+    apply_border_to_range('I11:P18', thin_border)
     ws.merge_cells('I11:K11')
-    ws.merge_cells('L11:O11')
+    ws.merge_cells('L11:P11')
     ws.merge_cells('I12:K18')
-    ws.merge_cells('L12:O18')
+    ws.merge_cells('L12:P18')
     ws['I11'].value = "FROM:"
     ws['I11'].font = font_box_header
     ws['I11'].alignment = align_center
@@ -422,7 +431,7 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
 
     current_row = start_row + 1
     
-    numeric_cols = ["Q'ty (boxes)", "Q'ty (pcs)", "W / pc (kgs)", "N.W (kgs)", "G.W (kgs)", "CBM"]
+    numeric_cols = ["Q'ty (boxes)", "Q'ty (pcs)", "W / pc (kgs)", "N.W (kgs)", "G.W (kgs)", "CBM", "Pallet Ratio"]
     for col in numeric_cols:
         if col in data_df.columns:
             data_df[col] = pd.to_numeric(data_df[col], errors='coerce').fillna(0)
@@ -430,6 +439,10 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
             data_df[col] = 0
 
     for _, row_data in data_df.iterrows():
+        # <<-- NEW: Xử lý giá trị cho cột mới trước khi ghi
+        total_pallet_ratio_val = row_data.get('Total Pallet Ratio')
+        if pd.isna(total_pallet_ratio_val):
+            total_pallet_ratio_val = '' # Hiển thị ô trống nếu không có giá trị
         row_values = [
             row_data.get('Item No.', ''), row_data.get('Pallet', ''),
             row_data.get('Part Name', ''), row_data.get('Part No.', ''),
@@ -446,16 +459,12 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
             cell.border = thin_border
             
             col_letter = get_column_letter(i)
-            # Cột số lượng (boxes, pcs) - H, I
             if col_letter in ['H', 'I']:
                 cell.number_format = '#,##0'
                 cell.alignment = align_right_center
-            # Cột trọng lượng W/pc (kgs) - J
             elif col_letter == 'J':
-                # Thay đổi 1: Áp dụng định dạng 4 số thập phân theo framework
                 cell.number_format = '#,##0.0000'
                 cell.alignment = align_right_center
-            # Cột trọng lượng N.W, G.W - K, L
             elif col_letter in ['K', 'L']:
                 cell.number_format = '#,##0.00'
                 cell.alignment = align_right_center
@@ -472,8 +481,7 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
     total_qty_pcs = data_df["Q'ty (pcs)"].sum()
     total_nw = data_df['N.W (kgs)'].sum()
     total_gw = data_df['G.W (kgs)'].sum()
-
-    # Thay đổi 2: Chỉnh sửa giá trị label theo framework
+    
     total_label_cell = ws.cell(row=total_row_num, column=start_col, value=f'TOTAL CONTAINER {container_id_num}')
     ws.merge_cells(start_row=total_row_num, start_column=start_col, end_row=total_row_num, end_column=start_col + 3)
     total_label_cell.font = font_bold
@@ -504,39 +512,35 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
         elif 'Spec' in col_name: ws.column_dimensions[column_letter].width = 20
         else: ws.column_dimensions[column_letter].width = 14
 
-    # --- 7. PHẦN CASE MARK ---
-    # (Phần này không thay đổi và được giữ nguyên)
-    case_mark_row = total_row_num + 3
-    ws.cell(row=case_mark_row, column=4, value="CASE MARK").font = font_bold # Cột D
 
+    # --- 7. PHẦN CASE MARK ---
+    case_mark_row = total_row_num + 3
+    ws.cell(row=case_mark_row, column=4, value="CASE MARK").font = font_bold
     details_start_row = case_mark_row + 1
     ws.cell(row=details_start_row,     column=5, value="INVOICE NO.:").font = font_content
     ws.cell(row=details_start_row + 1, column=5, value="").font = font_content
     ws.cell(row=details_start_row + 2, column=5, value="MADE IN VIETNAM").font = font_content
-    
     ws.cell(row=details_start_row , column=8, value="Package:").font = font_content 
     ws.cell(row=details_start_row + 1, column=8, value="Quantity:").font = font_content 
     ws.cell(row=details_start_row + 2, column=8, value="N.W:").font = font_content      
     ws.cell(row=details_start_row + 3, column=8, value="G.W:").font = font_content      
-
     ws.cell(row=details_start_row , column=9, value=f"{cumulative_pallet_count} pallets").font = font_content
     ws.cell(row=details_start_row + 1, column=9, value=f"{int(cumulative_pcs)} pcs").font = font_content 
     ws.cell(row=details_start_row + 2, column=9, value=f"{cumulative_nw:.2f} kgs").font = font_content     
     ws.cell(row=details_start_row + 3, column=9, value=f"{cumulative_gw:.2f} kgs").font = font_content     
 
-    # --- 8. PHẦN CHỮ KÝ (CẬP NHẬT VỊ TRÍ) ---
-    # (Phần này không thay đổi và được giữ nguyên)
+    # --- 8. PHẦN CHỮ KÝ ---
     signature_label_row = details_start_row + 8 
     signature_name_row = signature_label_row + 4
-    ws.cell(row=signature_label_row, column=11, value="Signature:").font = font_content
+    ws.cell(row=signature_label_row, column=13, value="Signature:").font = font_content
     signature_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     ws.row_dimensions[signature_name_row].height = 35
-    ws.merge_cells(start_row=signature_name_row, start_column=10, end_row=signature_name_row, end_column=12)
-    cell_thu = ws.cell(row=signature_name_row, column=10)
+    ws.merge_cells(start_row=signature_name_row, start_column=12, end_row=signature_name_row, end_column=14)
+    cell_thu = ws.cell(row=signature_name_row, column=12)
     cell_thu.value = "NGUYEN DUC THU\nBusiness Director"
     cell_thu.font = font_content
     cell_thu.alignment = signature_alignment
-    for i in range(10, 13):
+    for i in range(12, 15):
         ws.cell(row=signature_name_row, column=i).border = border_top_only
     ws.merge_cells(start_row=signature_name_row, start_column=15, end_row=signature_name_row, end_column=17)
     cell_giang = ws.cell(row=signature_name_row, column=15)
@@ -545,7 +549,6 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
     cell_giang.alignment = signature_alignment
     for i in range(15, 18):
         ws.cell(row=signature_name_row, column=i).border = border_top_only
-
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -579,7 +582,13 @@ def process_data():
         if not all([filepath, sheet_name]):
             return jsonify({"success": False, "error": "Thiếu thông tin file hoặc sheet."}), 400
 
-        all_pallets, error = load_and_prepare_pallets(filepath, sheet_name)
+        # --- GIAI ĐOẠN 1: TẢI VÀ TỐI ƯU HÓA (GIỮ NGUYÊN) ---
+        # Logic này vẫn chính xác và được giữ lại
+        raw_data_map, all_pallets_df = load_and_map_raw_data_for_pkl(filepath, sheet_name)
+        if raw_data_map is None:
+             return jsonify({"success": False, "error": "Không thể đọc dữ liệu thô từ file Excel."}), 400
+
+        all_pallets, error = load_and_prepare_pallets(all_pallets_df)
         if error:
             return jsonify({"success": False, "error": error}), 400
         if not all_pallets:
@@ -589,11 +598,9 @@ def process_data():
         pre_packed_containers, pallets_to_process = preprocess_oversized_pallets(
             all_pallets, container_id_counter
         )
-
         pallets_c1, pallets_c2 = separate_pallets_by_company(
             pallets_to_process, company1_name, company2_name
         )
-
         int_p1, comb_p1, float_p1 = preprocess_and_classify_pallets(pallets_c1)
         packed_containers_c1 = layered_priority_packing(int_p1, comb_p1, float_p1, company1_name, container_id_counter)
         final_containers_c1, cross_ship_pallets_c1 = defragment_and_consolidate(packed_containers_c1)
@@ -607,14 +614,58 @@ def process_data():
             final_containers_c2, cross_ship_pallets_c2,
             container_id_counter
         )
-
         all_final_containers = pre_packed_containers + final_optimized_containers
-        
-        formatted_results = generate_response_data(all_final_containers)
 
+        # --- GIAI ĐOẠN 2: TẠO DỮ LIỆU PACKING LIST (THAY ĐỔI LỚN) ---
+        # Gọi hàm mới để tạo các DataFrame cho PKL
+        processed_pkl_dfs = create_packing_list_data(all_final_containers, raw_data_map)
+
+        # --- GIAI ĐOẠN 3: TẠO FILE EXCEL (THAY ĐỔI NHỎ) ---
+        wb = Workbook()
+        wb.remove(wb.active)
+
+        cumulative_totals = {'pallets': 0, 'pcs': 0, 'nw': 0, 'gw': 0}
+
+        sorted_container_ids = sorted(processed_pkl_dfs.keys())
+
+        for i, container_id in enumerate(sorted_container_ids, 1):
+            df_for_pkl = processed_pkl_dfs[container_id]
+            if df_for_pkl is None or df_for_pkl.empty:
+                continue
+
+            sheet_name = f"PKL_Cont_{i}"
+            ws = wb.create_sheet(title=sheet_name)
+            
+            # Tính toán và cộng dồn tổng cho phần "CASE MARK"
+            cumulative_totals['pallets'] += len(df_for_pkl[df_for_pkl['Pallet'] != ''])
+            cumulative_totals['pcs'] += df_for_pkl["Q'ty (pcs)"].sum()
+            cumulative_totals['nw'] += df_for_pkl['N.W (kgs)'].sum()
+            cumulative_totals['gw'] += df_for_pkl['G.W (kgs)'].sum()
+
+            write_packing_list_to_sheet(
+                ws, df_for_pkl, i,
+                cumulative_pallet_count=cumulative_totals['pallets'],
+                cumulative_pcs=cumulative_totals['pcs'],
+                cumulative_nw=cumulative_totals['nw'],
+                cumulative_gw=cumulative_totals['gw']
+            )
+
+        # 5. LƯU WORKBOOK VÀ GỬI VỀ CLIENT
+        output_stream = io.BytesIO()
+        wb.save(output_stream)
+        output_stream.seek(0)
+        timestamp = datetime.datetime.now().strftime("%d %b")
+        filename = f"Generated_Packing_List_for_{timestamp}.xlsx"
+        
+        print(f"[BACKEND] Đã tạo file '{filename}' thành công. Gửi file về client...")
         gc.collect()
 
-        return jsonify(formatted_results)
+        return send_file(
+            output_stream,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
 
     except Exception as e:
         import traceback
@@ -658,7 +709,7 @@ def generate_packing_list_endpoint():
             ws = wb.create_sheet(title=f"PKL_Cont_{container_id_num}")
 
             # Lưu ý: _prepare_data_for_pkl sẽ cập nhật pallet_counter
-            df_for_pkl = _prepare_data_for_pkl(container_data, raw_data_map, pallet_counter)
+            df_for_pkl = _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter)
             
             # *** THAY ĐỔI: Cập nhật các giá trị tổng dồn sau khi xử lý mỗi container ***
             cumulative_totals['pcs'] += df_for_pkl["Q'ty (pcs)"].sum()
