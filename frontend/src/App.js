@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import axios from 'axios';
 
 
-const API_URL = process.env.REACT_APP_API_URL || "https://final-02.onrender.comhttps://final-3-m55q.onrender.com";
+const API_URL = process.env.REACT_APP_API_URL || "https://final-3-m55q.onrender.com";
 //const API_URL = "http://127.0.0.1:5001"
 // --- BIỂU TƯỢỢNG (ICONS) ---
 // Các component SVG cho biểu tượng để giao diện thêm trực quan.
