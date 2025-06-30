@@ -31,7 +31,8 @@ from data_processor import (
 # --- KHỞI TẠO ỨNG DỤNG FLASK ---
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
-CORS(app)
+frontend_url = "https://phamthingocanh25.github.io"
+CORS(app, resources={r"/api/*": {"origins": frontend_url}})
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
