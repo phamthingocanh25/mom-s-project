@@ -532,15 +532,15 @@ def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_
     # --- 8. PHẦN CHỮ KÝ ---
     signature_label_row = details_start_row + 8 
     signature_name_row = signature_label_row + 4
-    ws.cell(row=signature_label_row, column=13, value="Signature:").font = font_content
+    ws.cell(row=signature_label_row, column=12, value="Signature").font = font_content
     signature_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     ws.row_dimensions[signature_name_row].height = 35
-    ws.merge_cells(start_row=signature_name_row, start_column=12, end_row=signature_name_row, end_column=14)
-    cell_thu = ws.cell(row=signature_name_row, column=12)
+    ws.merge_cells(start_row=signature_name_row, start_column=11, end_row=signature_name_row, end_column=13)
+    cell_thu = ws.cell(row=signature_name_row, column=11)
     cell_thu.value = "NGUYEN DUC THU\nBusiness Director"
     cell_thu.font = font_content
     cell_thu.alignment = signature_alignment
-    for i in range(12, 15):
+    for i in range(11, 14):
         ws.cell(row=signature_name_row, column=i).border = border_top_only
     ws.merge_cells(start_row=signature_name_row, start_column=15, end_row=signature_name_row, end_column=17)
     cell_giang = ws.cell(row=signature_name_row, column=15)
