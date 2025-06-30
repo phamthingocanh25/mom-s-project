@@ -256,10 +256,10 @@ def _generate_dataframe_for_container(container_data, raw_data_map, pallet_count
     if not pkl_data_list:
         return None
     return pd.DataFrame(pkl_data_list)
-def create_packing_list_data(final_optimized_containers, raw_data_map):
+def create_packing_list_data(final_optimized_containers_dicts, raw_data_map):
     """
     Điều phối việc tạo dữ liệu Packing List từ kết quả tối ưu hóa cuối cùng.
-    Hàm này sẽ gọi _generate_dataframe_for_container để thực hiện logic FFD.
+    Hàm này chấp nhận một danh sách các DICTIONARY, không phải object.
     """
     print("[BACKEND] Bắt đầu quy trình tạo dữ liệu Packing List (logic FFD)...")
     processed_dfs_for_pkl = {}
@@ -267,15 +267,14 @@ def create_packing_list_data(final_optimized_containers, raw_data_map):
     # Khởi tạo bộ đếm pallet và item, đảm bảo tính liên tục qua các container
     pallet_counter = {'item_no': 1, 'pallet_no': 1}
 
-    # Sắp xếp các container theo ID để đảm bảo thứ tự
-    final_optimized_containers.sort(key=lambda x: x['container_id'])
+    # Sắp xếp các container theo ID để đảm bảo thứ tự.
+    # Sử dụng key 'id' thay vì 'container_id' để nhất quán.
+    final_optimized_containers_dicts.sort(key=lambda x: int(x['id'].split('_')[-1]))
 
-    for container_data in final_optimized_containers:
-        container_id = container_data['container_id']
+    for container_data in final_optimized_containers_dicts:
+        container_id = container_data['id'] # Sử dụng key 'id'
         print(f"  - Đang xử lý Container ID: {container_id}")
 
-        # ====> GỌI HÀM ĐÃ ĐƯỢC THAY THẾ <====
-        # Logic phức tạp về FFD đã được đóng gói hoàn toàn trong hàm này
         df_for_pkl = _generate_dataframe_for_container(
             container_data, 
             raw_data_map, 
@@ -570,37 +569,42 @@ def upload_file():
     return jsonify({"success": False, "error": "Định dạng file không hợp lệ"}), 400
 
 
+# backend/app.py
+
+# backend/app.py
+
 @app.route('/api/process', methods=['POST'])
 def process_data():
     try:
         data = request.get_json()
         filepath = data.get('filepath')
         sheet_name = data.get('sheetName')
+        
+        # Lấy tên công ty, sử dụng giá trị mặc định nếu không có
+        # Giữ nguyên logic này để tương thích với các bước xử lý
         company1_name = data.get('company1Name', '1.0').strip()
         company2_name = data.get('company2Name', '2.0').strip()
 
         if not all([filepath, sheet_name]):
             return jsonify({"success": False, "error": "Thiếu thông tin file hoặc sheet."}), 400
 
-        # --- GIAI ĐOẠN 1: TẢI VÀ TỐI ƯU HÓA (GIỮ NGUYÊN) ---
-        # Logic này vẫn chính xác và được giữ lại
-        raw_data_map, all_pallets_df = load_and_map_raw_data_for_pkl(filepath, sheet_name)
-        if raw_data_map is None:
-             return jsonify({"success": False, "error": "Không thể đọc dữ liệu thô từ file Excel."}), 400
-
-        all_pallets, error = load_and_prepare_pallets(all_pallets_df)
+        # --- GIAI ĐOẠN 1: TẢI VÀ TỐI ƯU HÓA (LOGIC NÀY GIỮ NGUYÊN) ---
+        all_pallets, error = load_and_prepare_pallets(filepath, sheet_name)
         if error:
             return jsonify({"success": False, "error": error}), 400
         if not all_pallets:
              return jsonify({"success": False, "error": "Không có dữ liệu pallet hợp lệ để xử lý."}), 400
-        
+
         container_id_counter = {'count': 1}
+        
         pre_packed_containers, pallets_to_process = preprocess_oversized_pallets(
             all_pallets, container_id_counter
         )
+        
         pallets_c1, pallets_c2 = separate_pallets_by_company(
             pallets_to_process, company1_name, company2_name
         )
+        
         int_p1, comb_p1, float_p1 = preprocess_and_classify_pallets(pallets_c1)
         packed_containers_c1 = layered_priority_packing(int_p1, comb_p1, float_p1, company1_name, container_id_counter)
         final_containers_c1, cross_ship_pallets_c1 = defragment_and_consolidate(packed_containers_c1)
@@ -614,62 +618,23 @@ def process_data():
             final_containers_c2, cross_ship_pallets_c2,
             container_id_counter
         )
+        
         all_final_containers = pre_packed_containers + final_optimized_containers
 
-        # --- GIAI ĐOẠN 2: TẠO DỮ LIỆU PACKING LIST (THAY ĐỔI LỚN) ---
-        # Gọi hàm mới để tạo các DataFrame cho PKL
-        processed_pkl_dfs = create_packing_list_data(all_final_containers, raw_data_map)
+        # --- GIAI ĐOẠN 2: CHUYỂN ĐỔI KẾT QUẢ SANG JSON VÀ TRẢ VỀ ---
+        # Sử dụng hàm generate_response_data đã có để tạo đúng định dạng JSON
+        # mà frontend mong đợi.
+        response_data = generate_response_data(all_final_containers)
 
-        # --- GIAI ĐOẠN 3: TẠO FILE EXCEL (THAY ĐỔI NHỎ) ---
-        wb = Workbook()
-        wb.remove(wb.active)
-
-        cumulative_totals = {'pallets': 0, 'pcs': 0, 'nw': 0, 'gw': 0}
-
-        sorted_container_ids = sorted(processed_pkl_dfs.keys())
-
-        for i, container_id in enumerate(sorted_container_ids, 1):
-            df_for_pkl = processed_pkl_dfs[container_id]
-            if df_for_pkl is None or df_for_pkl.empty:
-                continue
-
-            sheet_name = f"PKL_Cont_{i}"
-            ws = wb.create_sheet(title=sheet_name)
-            
-            # Tính toán và cộng dồn tổng cho phần "CASE MARK"
-            cumulative_totals['pallets'] += len(df_for_pkl[df_for_pkl['Pallet'] != ''])
-            cumulative_totals['pcs'] += df_for_pkl["Q'ty (pcs)"].sum()
-            cumulative_totals['nw'] += df_for_pkl['N.W (kgs)'].sum()
-            cumulative_totals['gw'] += df_for_pkl['G.W (kgs)'].sum()
-
-            write_packing_list_to_sheet(
-                ws, df_for_pkl, i,
-                cumulative_pallet_count=cumulative_totals['pallets'],
-                cumulative_pcs=cumulative_totals['pcs'],
-                cumulative_nw=cumulative_totals['nw'],
-                cumulative_gw=cumulative_totals['gw']
-            )
-
-        # 5. LƯU WORKBOOK VÀ GỬI VỀ CLIENT
-        output_stream = io.BytesIO()
-        wb.save(output_stream)
-        output_stream.seek(0)
-        timestamp = datetime.datetime.now().strftime("%d %b")
-        filename = f"Generated_Packing_List_for_{timestamp}.xlsx"
+        gc.collect() # Dọn dẹp bộ nhớ
         
-        print(f"[BACKEND] Đã tạo file '{filename}' thành công. Gửi file về client...")
-        gc.collect()
-
-        return send_file(
-            output_stream,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        # Trả về kết quả dưới dạng JSON
+        return jsonify(response_data)
 
     except Exception as e:
         import traceback
         traceback.print_exc()
+        # Trả về lỗi dưới dạng JSON
         return jsonify({"success": False, "error": f"Đã xảy ra lỗi hệ thống không mong muốn: {str(e)}"}), 500
 
 @app.route('/api/generate_packing_list', methods=['POST'])
