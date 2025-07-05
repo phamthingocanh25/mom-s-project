@@ -5,8 +5,8 @@ from data_processor import *
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1: Cấu hình ---
-    file_path = "C:\\Users\\emily\\Documents\\Zalo Received Files\\Chia cont - 2025(AutoRecovered).xlsx"
-    sheet_name = "4 Mar (21+27feb)"
+    file_path = "C:\\Users\\emily\\Downloads\\Chia-cont-2025-filled-data (1).xlsx"
+    sheet_name = "09 Jun"
     COMPANY_1 = "1.0"
     COMPANY_2 = "2.0"
 

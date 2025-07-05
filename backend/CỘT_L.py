@@ -35,49 +35,29 @@ except ImportError as e:
 # --- HÀM MỚI ĐƯỢC THÊM VÀO ---
 def print_final_pallet_values(all_final_containers):
     """
-    In ra giá trị của tất cả các pallet trong kết quả cuối cùng,
-    phân loại theo Integer, Single Float, và Combined.
+    HÀM TẠM THỜI DÙNG ĐỂ GỠ LỖI
+    In thuộc tính của đối tượng Pallet đầu tiên tìm thấy ra terminal rồi thoát.
     """
-    print("\n" + "="*20 + " IN GIÁ TRỊ PALLET SAU TỐI ƯU HÓA " + "="*20)
+    print("\n" + "="*20 + " BẮT ĐẦU KIỂM TRA THUỘC TÍNH PALLET " + "="*20)
 
-    final_integer_pallets = []
-    final_float_pallets = []
-    final_combined_pallets = []
-
-    # Duyệt qua từng container trong kết quả cuối cùng
+    # Duyệt qua các container để tìm pallet đầu tiên
     for container in all_final_containers:
-        # Duyệt qua từng pallet trong container
-        for pallet in container.get('pallets', []):
-            pallet_type = pallet.get('type')
-            if pallet_type == 'integer':
-                final_integer_pallets.append(pallet)
-            elif pallet_type == 'single_float':
-                final_float_pallets.append(pallet)
-            elif pallet_type == 'combined':
-                final_combined_pallets.append(pallet)
+        if hasattr(container, 'pallets') and container.pallets:
+            # Lấy pallet đầu tiên
+            first_pallet = container.pallets[0]
 
-    print("\n---[ PALLET LOẠI INTEGER ]---")
-    if final_integer_pallets:
-        for p in final_integer_pallets:
-            print(p)
-    else:
-        print("Không có pallet loại Integer nào.")
+            print("\n✅ Đã tìm thấy một đối tượng Pallet. Các thuộc tính của nó là:")
+            
+            # vars(object) sẽ in ra các thuộc tính và giá trị của nó dưới dạng dictionary
+            # Đây là cách tốt nhất để xem dữ liệu bên trong.
+            print(vars(first_pallet))
+            
+            print("\n" + "="*60)
+            print("👉 HƯỚNG DẪN: Hãy nhìn vào kết quả ở trên và tìm tên thuộc tính dùng để phân loại pallet (ví dụ: 'type', 'kind', 'classification', 'pallet_type'...).")
+            print("             Sau đó, dùng tên đó để sửa lỗi ở bước tiếp theo.")
+            return # Dừng hàm và toàn bộ quy trình tại đây để bạn xem kết quả
 
-    print("\n---[ PALLET LOẠI SINGLE FLOAT ]---")
-    if final_float_pallets:
-        for p in final_float_pallets:
-            print(p)
-    else:
-        print("Không có pallet loại Single Float nào.")
-
-    print("\n---[ PALLET LOẠI COMBINED ]---")
-    if final_combined_pallets:
-        for p in final_combined_pallets:
-            print(p)
-    else:
-        print("Không có pallet loại Combined nào.")
-    
-    print("\n" + "="*60)
+    print("Không tìm thấy pallet nào để kiểm tra.")
 
 
 def run_optimization_process(filepath, sheet_name, company1_name, company2_name):

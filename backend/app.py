@@ -12,7 +12,7 @@ from openpyxl.styles import Font, Border, Side, Alignment,PatternFill
 from openpyxl.utils import get_column_letter, rows_from_range, cols_from_range
 import math
 from copy import deepcopy
-import datetime
+
 
 
 # --- IMPORT CÁC MODULE XỬ LÝ ---
@@ -32,6 +32,7 @@ from data_processor import (
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 CORS(app, resources={r"/api/*": {"origins": "https://phamthingocanh25.github.io"}})
+#CORS(app)
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -58,11 +59,12 @@ def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_d
 
     # Theo yêu cầu: quantity (boxes) = cột H x 1
     qty_boxes = box_per_pallet_val * 1.0
+    qty_boxes = math.ceil(qty_boxes)
     qty_pcs = qty_boxes * qty_per_box_val
-    w_pc_kgs = (weight_per_pc_raw_val / qty_per_box_val) if qty_per_box_val > 0 else 0
+    w_pc_kgs = ((weight_per_pc_raw_val - 0.4) / qty_per_box_val) if qty_per_box_val > 0 else 0
     nw_kgs = qty_pcs * w_pc_kgs
     # G.W và CBM được tính cho 1 pallet đầy đủ
-    gw_kgs = nw_kgs + (qty_boxes * 0.4) + 50
+    gw_kgs = math.floor(nw_kgs + (qty_boxes * 0.4) + 50)
     cbm = 1.0 * 1.15 * 1.15 * 0.8
 
     row = {
@@ -85,8 +87,9 @@ def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_d
     # Tăng số thứ tự cho mỗi dòng pallet được tạo
     pallet_counter['item_no'] += 1
     pallet_counter['pallet_no'] += 1
+    return qty_pcs
 
-def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pkl_data_list, total_block_ratio): # <<-- CHANGED: Added total_block_ratio
+def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pkl_data_list, total_block_ratio, processed_pcs_tracker): # <<-- CHANGED: Added total_block_ratio
     """
     Tạo một khối dòng trong PKL cho một pallet gộp (đủ hoặc lẻ).
     *** ĐÃ ĐƯỢC CẬP NHẬT ĐỂ CHUẨN HÓA TỈ LỆ VÀ THÊM TỔNG TỈ LỆ ***
@@ -114,8 +117,23 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
         weight_per_pc_raw_item = _safe_float(raw_info_item.get('WeightPerPc_Raw'))
 
         qty_boxes_item = individual_pallet_ratio * box_per_pallet_item
-        qty_pcs_item = qty_boxes_item * qty_per_box_item
-        w_pc_kgs_item = (weight_per_pc_raw_item / qty_per_box_item) if qty_per_box_item > 0 else 0
+        qty_boxes_item =math.ceil(qty_boxes_item)
+
+        product_code = item['product_code']
+    
+        # --- LOGIC TÍNH TOÁN PCS MỚI, ROBUST HƠN ---
+        total_pcs_from_M = _safe_float(raw_info_item.get('TotalPcsFromM', 0))
+        pcs_processed_so_far = processed_pcs_tracker.get(product_code, 0)
+        
+        # Số lượng cho phần lẻ này chính là phần còn lại để hoàn thành tổng yêu cầu
+        qty_pcs_item = total_pcs_from_M - pcs_processed_so_far
+        qty_pcs_item = max(0, qty_pcs_item) # Đảm bảo không bị âm
+
+   
+        processed_pcs_tracker[product_code] = pcs_processed_so_far + qty_pcs_item
+    
+    
+        w_pc_kgs_item = ((weight_per_pc_raw_item - 0.4) / qty_per_box_item) if qty_per_box_item > 0 else 0
         nw_kgs_item = qty_pcs_item * w_pc_kgs_item
 
         items_calculated.append({
@@ -132,7 +150,7 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
         total_boxes_group += qty_boxes_item
 
     # BƯỚC 2: TÍNH TOÁN TỔNG CHO CẢ KHỐI
-    gw_kgs_group = total_nw_group + (total_boxes_group * 0.4) + 50
+    gw_kgs_group = math.floor(total_nw_group + (total_boxes_group * 0.4) + 50)
     cbm_group = total_block_ratio * 1.15 * 1.15 * 0.8
 
     # BƯỚC 3: GHI DỮ LIỆU VÀO DANH SÁCH
@@ -160,17 +178,12 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
     pallet_counter['item_no'] += 1
     pallet_counter['pallet_no'] += 1
 
-def _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter):
-    """
-    Tạo DataFrame cho Packing List của một container duy nhất.
-    PHIÊN BẢN 3 (Theo phản hồi mới nhất):
-    1. Duyệt qua TỪNG DÒNG MÃ HÀNG trong kết quả tối ưu hóa.
-    2. Tách phần nguyên/lẻ của SỐ LƯỢNG PALLET CỦA TỪNG MÃ HÀNG ĐÓ.
-    3. Phần nguyên tạo thành các pallet ĐƠN, NGUYÊN (tỉ lệ 1.0).
-    4. Tất cả các phần lẻ được gom vào "rổ chung" và xử lý bằng FFD.
-    """
+def _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter,processed_pcs_tracker):
+    
+   
     pkl_data_list = []
-    unprocessed_fractions = [] # <<-- "Rổ chung" chứa tất cả các mã hàng lẻ
+    unprocessed_fractions = []
+     
     EPSILON = 1e-6 # Hằng số nhỏ để so sánh số thực
 
     # --- BƯỚC 1: TÁCH PHẦN NGUYÊN & LẺ TỪ TỪNG DÒNG SẢN PHẨM ---
@@ -211,7 +224,15 @@ def _generate_dataframe_for_container(container_data, raw_data_map, pallet_count
                 }
                 # Tạo ra N pallet NGUYÊN (N dòng trên PKL), mỗi pallet là 1 pallet ĐƠN
                 for _ in range(int(integer_part)):
-                    _render_single_pallet_unit(pseudo_single_pallet_block, raw_data_map, pallet_counter, pkl_data_list)
+                    # --- THAY ĐỔI Ở ĐÂY ---
+                    # Gọi hàm render và nhận lại số pcs đã tính
+                    calculated_pcs = _render_single_pallet_unit(
+                        pseudo_single_pallet_block, raw_data_map, pallet_counter, pkl_data_list
+                    )
+                    # Cộng dồn vào tracker cho mã sản phẩm tương ứng
+                    current_product_code = item['product_code']
+                    processed_pcs_tracker[current_product_code] = processed_pcs_tracker.get(current_product_code, 0) + calculated_pcs
+                    # --- KẾT THÚC THAY ĐỔI ---
             
             # 1b. Xử lý phần LẺ: Thêm vào "rổ chung" để gom sau
             if fractional_part > EPSILON:
@@ -250,7 +271,8 @@ def _generate_dataframe_for_container(container_data, raw_data_map, pallet_count
             raw_data_map, 
             pallet_counter, 
             pkl_data_list, 
-            total_block_ratio=current_total_ratio
+            total_block_ratio=current_total_ratio,
+            processed_pcs_tracker=processed_pcs_tracker 
         )
 
     if not pkl_data_list:
@@ -660,6 +682,7 @@ def generate_packing_list_endpoint():
 
         wb = Workbook()
         wb.remove(wb.active)
+        processed_pcs_tracker = {}
         pallet_counter = {'item_no': 1, 'pallet_no': 1}
         
         # *** THAY ĐỔI: Khởi tạo dictionary để lưu trữ tổng dồn ***
@@ -674,7 +697,9 @@ def generate_packing_list_endpoint():
             ws = wb.create_sheet(title=f"PKL_Cont_{container_id_num}")
 
             # Lưu ý: _prepare_data_for_pkl sẽ cập nhật pallet_counter
-            df_for_pkl = _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter)
+            df_for_pkl = _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter,processed_pcs_tracker)
+            if df_for_pkl is None or df_for_pkl.empty:
+                continue
             
             # *** THAY ĐỔI: Cập nhật các giá trị tổng dồn sau khi xử lý mỗi container ***
             cumulative_totals['pcs'] += df_for_pkl["Q'ty (pcs)"].sum()
