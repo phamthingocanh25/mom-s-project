@@ -31,8 +31,8 @@ from data_processor import (
 # --- KHỞI TẠO ỨNG DỤNG FLASK ---
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
-CORS(app, resources={r"/api/*": {"origins": "https://phamthingocanh25.github.io"}})
-#CORS(app)
+#CORS(app, resources={r"/api/*": {"origins": "https://phamthingocanh25.github.io"}})
+CORS(app)
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -64,7 +64,7 @@ def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_d
     w_pc_kgs = ((weight_per_pc_raw_val - 0.4) / qty_per_box_val) if qty_per_box_val > 0 else 0
     nw_kgs = qty_pcs * w_pc_kgs
     # G.W và CBM được tính cho 1 pallet đầy đủ
-    gw_kgs = math.floor(nw_kgs + (qty_boxes * 0.4) + 50)
+    gw_kgs = math.ceil(nw_kgs + (qty_boxes * 0.4) + 50)
     cbm = 1.0 * 1.15 * 1.15 * 0.8
 
     row = {
@@ -150,7 +150,7 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
         total_boxes_group += qty_boxes_item
 
     # BƯỚC 2: TÍNH TOÁN TỔNG CHO CẢ KHỐI
-    gw_kgs_group = math.floor(total_nw_group + (total_boxes_group * 0.4) + 50)
+    gw_kgs_group = math.ceil(total_nw_group + (total_boxes_group * 0.4) + 50)
     cbm_group = total_block_ratio * 1.15 * 1.15 * 0.8
 
     # BƯỚC 3: GHI DỮ LIỆU VÀO DANH SÁCH
