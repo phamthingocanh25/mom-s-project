@@ -122,8 +122,8 @@ def load_and_map_raw_data_for_pkl(filepath, sheet_name):
         # Xác định các cột cần thiết cho Packing List theo framework
         # B(1), C(2), F(5), G(6), H(7), AW(48)
         # Cột K(10) đã được xử lý ở bước tối ưu nhưng vẫn có thể lấy ở đây nếu cần
-        column_indices_pkl = [1, 2, 5, 6, 7,12, 48] 
-        column_names_pkl = ['Part No', 'Part Name', 'QtyPerBox', 'WeightPerPc_Raw', 'BoxPerPallet','TotalPcsFromM', 'BoxSpec']
+        column_indices_pkl = [1, 2, 4, 5, 6, 7,12, 48] 
+        column_names_pkl = ['Part No', 'Part Name', 'Wpc_kgs','QtyPerBox', 'WeightPerPc_Raw', 'BoxPerPallet','TotalPcsFromM', 'BoxSpec']
 
         df_raw = pd.read_excel(
             filepath, 
@@ -143,7 +143,7 @@ def load_and_map_raw_data_for_pkl(filepath, sheet_name):
         # 3. Chuyển DataFrame đã được làm sạch thành một dictionary để tra cứu nhanh
         raw_data_map = df_raw_unique.set_index('lookup_key').to_dict('index')
         for key in raw_data_map:
-            for field in ['QtyPerBox', 'BoxPerPallet', 'WeightPerPc_Raw','TotalPcsFromM']:
+            for field in ['QtyPerBox', 'BoxPerPallet', 'WeightPerPc_Raw','TotalPcsFromM', 'Wpc_kgs']:
                 if field in raw_data_map[key]:
                    value = raw_data_map[key][field]
                    if value in ["", None]:

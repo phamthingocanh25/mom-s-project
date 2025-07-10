@@ -55,13 +55,12 @@ def _render_single_pallet_unit(item_content, raw_data_map, pallet_counter, pkl_d
 
     qty_per_box_val = _safe_float(raw_info.get('QtyPerBox'))
     box_per_pallet_val = _safe_float(raw_info.get('BoxPerPallet')) # Chính là cột H
-    weight_per_pc_raw_val = _safe_float(raw_info.get('WeightPerPc_Raw'))
+    w_pc_kgs = _safe_float(raw_info.get('Wpc_kgs'))
 
     # Theo yêu cầu: quantity (boxes) = cột H x 1
     qty_boxes = box_per_pallet_val * 1.0
     qty_boxes = math.ceil(qty_boxes)
     qty_pcs = qty_boxes * qty_per_box_val
-    w_pc_kgs = ((weight_per_pc_raw_val - 0.4) / qty_per_box_val) if qty_per_box_val > 0 else 0
     nw_kgs = qty_pcs * w_pc_kgs
     # G.W và CBM được tính cho 1 pallet đầy đủ
     gw_kgs = math.ceil(nw_kgs + (qty_boxes * 0.4) + 50)
@@ -133,7 +132,7 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
         processed_pcs_tracker[product_code] = pcs_processed_so_far + qty_pcs_item
     
     
-        w_pc_kgs_item = ((weight_per_pc_raw_item - 0.4) / qty_per_box_item) if qty_per_box_item > 0 else 0
+        w_pc_kgs_item = _safe_float(raw_info_item.get('Wpc_kgs'))
         nw_kgs_item = qty_pcs_item * w_pc_kgs_item
 
         items_calculated.append({
