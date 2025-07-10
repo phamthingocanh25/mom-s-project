@@ -31,8 +31,8 @@ from data_processor import (
 # --- KHỞI TẠO ỨNG DỤNG FLASK ---
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
-CORS(app, resources={r"/api/*": {"origins": "https://phamthingocanh25.github.io"}})
-#CORS(app)
+#CORS(app, resources={r"/api/*": {"origins": "https://phamthingocanh25.github.io"}})
+CORS(app)
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -604,8 +604,8 @@ def process_data():
         
         # Lấy tên công ty, sử dụng giá trị mặc định nếu không có
         # Giữ nguyên logic này để tương thích với các bước xử lý
-        company1_name = data.get('company1Name', '1.0').strip()
-        company2_name = data.get('company2Name', '2.0').strip()
+        company1_name = data.get('company1Name', '1').strip()
+        company2_name = data.get('company2Name', '2').strip()
 
         if not all([filepath, sheet_name]):
             return jsonify({"success": False, "error": "Thiếu thông tin file hoặc sheet."}), 400

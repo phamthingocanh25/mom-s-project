@@ -200,8 +200,19 @@ def load_and_prepare_pallets(filepath, sheet_name):
         # Lọc bỏ các pallet có số lượng bằng 0 hoặc âm
         df = df[df['quantity'] > 0].copy()
         
-        # Đảm bảo cột công ty là chuỗi
+      # --- BẮT ĐẦU SỬA LỖI ĐỂ CHUẨN HÓA CỘT CÔNG TY ---
+# 1. Chuyển đổi cột công ty sang dạng số, các giá trị không hợp lệ sẽ thành NaN
+        df['company'] = pd.to_numeric(df['company'], errors='coerce')
+
+# 2. Thay thế các giá trị NaN (ví dụ: ô trống) bằng một số mặc định, ở đây là 0
+        df['company'].fillna(0, inplace=True)
+
+# 3. Chuyển đổi cột số thành kiểu số nguyên để loại bỏ phần thập phân ".0"
+        df['company'] = df['company'].astype(int)
+
+# 4. Cuối cùng, chuyển đổi sang kiểu chuỗi để sử dụng trong logic so sánh
         df['company'] = df['company'].astype(str)
+# --- KẾT THÚC SỬA LỖI ---
 
         if df.empty:
             return None, "Không tìm thấy dữ liệu hợp lệ trong các cột đã chỉ định (B, C, D, K, L)."
@@ -316,7 +327,7 @@ def preprocess_and_classify_pallets(pallets):
         # Tìm pallet phụ để gộp 
         remaining_indices = []
         for i, pallet in enumerate(float_pallets):
-            if current_total_quantity + pallet.quantity <= threshold + EPSILON:
+            if current_total_quantity + pallet.quantity <= threshold + EPSILON and pallet.company == main_pallet.company:
                 current_group.append(pallet)
                 current_total_quantity += pallet.quantity
             else:
