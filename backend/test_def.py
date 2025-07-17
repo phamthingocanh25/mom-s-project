@@ -5,8 +5,8 @@ from data_processor import *
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1: Cấu hình ---
-    file_path = "C:\\Users\\emily\\Documents\\Zalo Received Files\\Chia cont- testing.xlsx"
-    sheet_name = "23 Jun "
+    file_path = "C:\\Users\\emily\\Documents\\Zalo Received Files\\Chia-cont-testing.xlsx"
+    sheet_name = "14 Jul"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
 
@@ -167,5 +167,38 @@ if __name__ == "__main__":
                     sorted_pallets = sorted(container.pallets, key=lambda p: p.id)
                     for pallet in sorted_pallets:
                         print(f"    + {pallet}")
+        print("\n\n" + "#"*80)
+        print("PHÂN TÍCH CHI TIẾT PALLET GỘP BỊ TÁCH (SPLIT COMBINED PALLETS)")
+        print("#"*80)
+
+        found_split_combined = False
+        # Duyệt qua tất cả các container trong kết quả cuối cùng
+        for container in sorted(all_final_containers, key=lambda c: int(c.id.split('_')[-1])):
+            # Duyệt qua từng pallet trong container
+            for pallet in container.pallets:
+                # Kiểm tra xem pallet có phải là pallet gộp (is_combined) VÀ đã bị tách (is_split) không
+                if pallet.is_combined and pallet.is_split:
+                    found_split_combined = True
+                    print("\n" + "-"*60)
+                    print(f"Phát hiện Pallet Gộp Bị Tách trong CONTAINER ID: {container.id}")
+                    
+                    # In thông tin của chính phần pallet bị tách này
+                    print(f"  -> PHẦN PALLET HIỆN TẠI: {pallet}")
+                    
+                    # In danh sách các pallet con (original pallets) mà nó chứa
+                    print("     Thành phần bên trong phần này:")
+                    if not pallet.original_pallets:
+                        print("       (Không có thông tin thành phần)")
+                    else:
+                        # GỌI HÀM HỢP NHẤT TRƯỚC KHI IN
+                        consolidated_originals = consolidate_sub_pallets(pallet.original_pallets)
+                        for original in sorted(consolidated_originals, key=lambda p: p.id):
+                            print(f"       - {original}")
+        
+        if not found_split_combined:
+            print("\nKhông tìm thấy pallet gộp nào bị tách trong kết quả cuối cùng.")
+
+        print("\n" + "#"*80)
+        print("PHÂN TÍCH HOÀN TẤT.")
         print("\n" + "#"*80)
         print("PHÂN TÍCH HOÀN TẤT.")
