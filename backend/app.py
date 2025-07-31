@@ -173,127 +173,162 @@ def _render_combined_pallet_block(item_content, raw_data_map, pallet_counter, pk
     
     pallet_counter['item_no'] += 1
     pallet_counter['pallet_no'] += 1
+def _generate_final_pkl_dataframe(kept_pallets, rebalanced_pallets, pallet_counter):
+    """
+    Tạo một DataFrame Packing List HOÀN CHỈNH cuối cùng từ các pallet được giữ lại 
+    và các pallet đã được cân bằng, đồng thời cập nhật bộ đếm pallet.
 
-def _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter, processed_pcs_tracker):
-    
+    Args:
+        kept_pallets (list): Danh sách các pallet đơn tối ưu đã được giữ lại.
+        rebalanced_pallets (list): Danh sách các pallet mới đã được nhóm lại từ hàng chờ.
+        pallet_counter (dict): Bộ đếm item và pallet toàn cục.
+
+    Returns:
+        pd.DataFrame: DataFrame của Packing List hoàn chỉnh.
+    """
+    all_final_pallet_groups = kept_pallets + rebalanced_pallets
+    all_final_pallet_groups.sort(key=lambda pg: pg[0]['Part No.'])
+
+    if not all_final_pallet_groups:
+        return pd.DataFrame()
+
     pkl_data_list = []
-    unprocessed_fractions = []
-     
-    EPSILON = 1e-6
-
-    # --- BƯỚC 1: TÁCH PHẦN NGUYÊN & LẺ TỪ TỪNG DÒNG SẢN PHẨM ---
-    for content_block in container_data.get('contents', []):
-        block_type = content_block.get('type')
-
-        items_to_process = []
-        if block_type == 'SinglePallet':
-            items_to_process.append({
-                "product_code": content_block['product_code'],
-                "product_name": content_block['product_name'],
-                "company": content_block['company'],
-                "quantity": content_block.get('quantity', 0)
-            })
-        else: # CombinedPallet
-            items_to_process = content_block.get('items', [])
-
-        for item in items_to_process:
-            item_total_pallet = _safe_float(item.get('quantity'))
-            if item_total_pallet < EPSILON:
-                continue
-            
-            integer_part = math.floor(item_total_pallet)
-            fractional_part = item_total_pallet - integer_part
-
-            if integer_part > 0:
-                pseudo_single_pallet_block = {
-                    'type': 'SinglePallet',
-                    'product_code': item['product_code'],
-                    'product_name': item['product_name'],
-                    'company': item['company']
-                }
-                for _ in range(int(integer_part)):
-                    # --- THAY ĐỔI QUAN TRỌNG Ở ĐÂY ---
-                    # Truyền processed_pcs_tracker vào hàm render pallet nguyên
-                    calculated_pcs = _render_single_pallet_unit(
-                        pseudo_single_pallet_block, 
-                        raw_data_map, 
-                        pallet_counter, 
-                        pkl_data_list,
-                        processed_pcs_tracker  # <<-- Đã thêm vào
-                    )
-                    # Cập nhật tracker với số lượng pcs vừa tính được
-                    current_product_code = item['product_code']
-                    processed_pcs_tracker[current_product_code] = processed_pcs_tracker.get(current_product_code, 0) + calculated_pcs
-            
-            if fractional_part > EPSILON:
-                unprocessed_fractions.append({
-                    "product_code": item['product_code'],
-                    "product_name": item['product_name'],
-                    "company": item['company'],
-                    "quantity": fractional_part
-                })
-
-    # --- BƯỚC 2: GOM CÁC MÃ HÀNG LẺ (Giữ nguyên) ---
-    unprocessed_fractions.sort(key=lambda x: x['quantity'], reverse=True)
     
-    while unprocessed_fractions:
-        current_group = [unprocessed_fractions.pop(0)]
-        current_total_ratio = current_group[0]['quantity']
+    for pallet_group in all_final_pallet_groups:
+        total_nw_group = sum(_safe_float(item.get('N.W (kgs)', 0)) for item in pallet_group)
+        total_boxes_group = sum(_safe_float(item.get("Q'ty (boxes)", 0)) for item in pallet_group)
+        max_box_per_pallet_in_group = max(_safe_float(item.get('Box/Pallet', 0)) for item in pallet_group)
+        
+        gw_kgs_group = _safe_float(pallet_group[0].get('G.W (kgs)', 0))
+        cbm_group = _safe_float(pallet_group[0].get('CBM', 0))
+        total_ratio_group = (total_boxes_group / max_box_per_pallet_in_group) if max_box_per_pallet_in_group > 0 else 0
+
+        # Nếu là pallet mới được cân bằng, tính lại G.W và CBM
+        if gw_kgs_group == 0:
+            gw_kgs_group = math.ceil(total_nw_group + (total_boxes_group * 0.4) + 50)
+        if cbm_group == 0:
+            cbm_group = max(total_ratio_group * 1.15 * 1.15 * 0.8, 0.1)
+
+        is_first_item_in_group = True
+        for item_data in pallet_group:
+            row = {
+                'Item No.': pallet_counter['item_no'] if is_first_item_in_group else '',
+                'Pallet': f"No.{pallet_counter['pallet_no']:03d}" if is_first_item_in_group else '',
+                'Part Name': item_data['Part Name'], 'Part No.': item_data['Part No.'],
+                "Q'ty (boxes)": item_data["Q'ty (boxes)"], "Q'ty (pcs)": item_data["Q'ty (pcs)"],
+                'W / pc (kgs)': item_data['W / pc (kgs)'], 'N.W (kgs)': item_data['N.W (kgs)'],
+                'G.W (kgs)': round(gw_kgs_group) if is_first_item_in_group else 0,
+                'MEAS. (m)': "1.15*1.15*0.8" if is_first_item_in_group else '',
+                'CBM': round(cbm_group, 4) if is_first_item_in_group else 0,
+                "Q'ty/box": item_data["Q'ty/box"], "Box/Pallet": item_data["Box/Pallet"],
+                "Box Spec": item_data["Box Spec"],
+            }
+            pkl_data_list.append(row)
+            is_first_item_in_group = False
+
+        pallet_counter['item_no'] += 1
+        pallet_counter['pallet_no'] += 1
+
+    df_final_pkl = pd.DataFrame(pkl_data_list)
+    
+    # Thêm cột 'Total Pallet Ratio'
+    if not df_final_pkl.empty:
+        df_final_pkl['__PalletGroup'] = df_final_pkl['Pallet'].replace('', pd.NA).ffill()
+        max_bpp_map = df_final_pkl.groupby('__PalletGroup')['Box/Pallet'].transform('max')
+        total_boxes_map = df_final_pkl.groupby('__PalletGroup')["Q'ty (boxes)"].transform('sum')
+        group_ratios = (total_boxes_map / max_bpp_map).fillna(0)
+        df_final_pkl['Total Pallet Ratio'] = group_ratios.map(lambda x: f"{x:.2%}")
+        df_final_pkl.loc[df_final_pkl['__PalletGroup'].duplicated(), 'Total Pallet Ratio'] = ''
+        df_final_pkl.drop(columns=['__PalletGroup'], inplace=True)
+
+    return df_final_pkl
+
+def _collect_items_for_rebalancing(df_container):
+    """
+    Phân tích DataFrame của container, tách pallet thành 2 nhóm:
+    1. Pallet đơn đã đầy (>=100%) sẽ được GIỮ LẠI.
+    2. Pallet đơn chưa đầy và TẤT CẢ pallet ghép sẽ được đưa vào HÀNG CHỜ.
+
+    Args:
+        df_container (pd.DataFrame): DataFrame PKL đã được phân tích lần đầu.
+
+    Returns:
+        tuple: (list_of_kept_pallets, list_of_items_to_rebalance)
+    """
+    items_to_rebalance = []
+    pallets_to_keep = []  # Danh sách mới để lưu các pallet được giữ lại
+
+    # Tạo các cột tạm nếu chưa có
+    if '__PalletGroup' not in df_container.columns:
+        df_container['__PalletGroup'] = df_container['Pallet'].replace('', pd.NA).ffill()
+    if '__ItemRatio' not in df_container.columns:
+        df_container["Q'ty (boxes)"] = pd.to_numeric(df_container["Q'ty (boxes)"], errors='coerce').fillna(0)
+        df_container["Box/Pallet"] = pd.to_numeric(df_container["Box/Pallet"], errors='coerce').fillna(0)
+        max_box_per_pallet_map = df_container.groupby('__PalletGroup')['Box/Pallet'].transform('max')
+        
+        def calculate_ratio(row, max_val):
+            return (row["Q'ty (boxes)"] / max_val) if max_val > 0 else 0
+        df_container['__ItemRatio'] = df_container.apply(lambda row: calculate_ratio(row, max_box_per_pallet_map[row.name]), axis=1)
+
+    # Lặp qua từng pallet để phân loại
+    for _, group in df_container.groupby('__PalletGroup'):
+        is_single_item_pallet = len(group) == 1
+        total_pallet_ratio = group['__ItemRatio'].sum()
+
+        if is_single_item_pallet and total_pallet_ratio >= 1.0:
+            # GIỮ LẠI: Pallet đơn đã đầy, thêm vào danh sách giữ lại
+            pallets_to_keep.append(group.to_dict('records'))
+        else:
+            # HÀNG CHỜ: Pallet ghép hoặc pallet đơn chưa đầy
+            items_to_rebalance.extend(group.to_dict('records'))
+            
+    # Sắp xếp các item cần cân bằng
+    items_to_rebalance.sort(key=lambda x: x['__ItemRatio'], reverse=True)
+    
+    print(f"\n[PHÂN LOẠI] Đã giữ lại {len(pallets_to_keep)} pallet tối ưu.")
+    print(f"[HÀNG CHỜ] Đã thu thập {len(items_to_rebalance)} pallet con để cân bằng lại.")
+    return pallets_to_keep, items_to_rebalance
+
+
+def _process_waiting_queue(waiting_queue_items):
+    """
+    Xử lý hàng đợi các pallet con, ghép chúng lại thành các pallet mới
+    theo quy tắc lấp đầy <= 90%. Sử dụng thuật toán tham lam (greedy).
+
+    Args:
+        waiting_queue_items (list): Danh sách các pallet con (dạng dict) đã được sắp xếp.
+
+    Returns:
+        list: Danh sách các pallet mới đã được ghép. Mỗi pallet mới là một list các pallet con.
+    """
+    if not waiting_queue_items:
+        return []
+
+    rebalanced_pallets = []
+    
+    while waiting_queue_items:
+        current_pallet_group = [waiting_queue_items.pop(0)]
+        max_box_pallet_in_group = _safe_float(current_pallet_group[0].get('Box/Pallet', 0))
         
         i = 0
-        while i < len(unprocessed_fractions):
-            if current_total_ratio + unprocessed_fractions[i]['quantity'] <= 1.0 + EPSILON:
-                item_to_add = unprocessed_fractions.pop(i)
-                current_total_ratio += item_to_add['quantity']
-                current_group.append(item_to_add)
+        while i < len(waiting_queue_items):
+            item_to_test = waiting_queue_items[i]
+            test_boxes = _safe_float(item_to_test.get("Q'ty (boxes)", 0))
+            
+            prospective_max_box_pallet = max(max_box_pallet_in_group, _safe_float(item_to_test.get('Box/Pallet', 0)))
+            prospective_total_boxes = sum(_safe_float(p.get("Q'ty (boxes)", 0)) for p in current_pallet_group) + test_boxes
+            prospective_ratio = prospective_total_boxes / prospective_max_box_pallet if prospective_max_box_pallet > 0 else 0
+
+            if prospective_ratio <= 0.9 + 1e-6:
+                max_box_pallet_in_group = prospective_max_box_pallet
+                current_pallet_group.append(waiting_queue_items.pop(i))
             else:
-                i += 1
+                i += 1 
+
+        rebalanced_pallets.append(current_pallet_group)
         
-        pseudo_combined_pallet = {'type': 'CombinedPallet', 'items': current_group}
-        
-        _render_combined_pallet_block(
-            pseudo_combined_pallet, 
-            raw_data_map, 
-            pallet_counter, 
-            pkl_data_list, 
-            total_block_ratio=current_total_ratio,
-            processed_pcs_tracker=processed_pcs_tracker 
-        )
-
-    if not pkl_data_list:
-        return None
-    return pd.DataFrame(pkl_data_list)
-def create_packing_list_data(final_optimized_containers_dicts, raw_data_map):
-    """
-    Điều phối việc tạo dữ liệu Packing List từ kết quả tối ưu hóa cuối cùng.
-    Hàm này chấp nhận một danh sách các DICTIONARY, không phải object.
-    """
-    print("[BACKEND] Bắt đầu quy trình tạo dữ liệu Packing List (logic FFD)...")
-    processed_dfs_for_pkl = {}
-    
-    # Khởi tạo bộ đếm pallet và item, đảm bảo tính liên tục qua các container
-    pallet_counter = {'item_no': 1, 'pallet_no': 1}
-
-    # Sắp xếp các container theo ID để đảm bảo thứ tự.
-    # Sử dụng key 'id' thay vì 'container_id' để nhất quán.
-    final_optimized_containers_dicts.sort(key=lambda x: int(x['id'].split('_')[-1]))
-
-    for container_data in final_optimized_containers_dicts:
-        container_id = container_data['id'] # Sử dụng key 'id'
-        print(f"  - Đang xử lý Container ID: {container_id}")
-
-        df_for_pkl = _generate_dataframe_for_container(
-            container_data, 
-            raw_data_map, 
-            pallet_counter
-        )
-        
-        if df_for_pkl is not None and not df_for_pkl.empty:
-            processed_dfs_for_pkl[container_id] = df_for_pkl
-        
-    print("[BACKEND] Đã hoàn tất tạo dữ liệu Packing List.")
-    return processed_dfs_for_pkl
-
+    print(f"[HÀNG CHỜ] Đã xử lý xong, tạo ra {len(rebalanced_pallets)} pallet mới đã cân bằng.")
+    return rebalanced_pallets
 
 def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_count,cumulative_pcs, cumulative_nw, cumulative_gw):
     """
@@ -578,8 +613,6 @@ def upload_file():
 
 # backend/app.py
 
-# backend/app.py
-
 @app.route('/api/process', methods=['POST'])
 def process_data():
     try:
@@ -588,7 +621,6 @@ def process_data():
         sheet_name = data.get('sheetName')
         
         # Lấy tên công ty, sử dụng giá trị mặc định nếu không có
-        # Giữ nguyên logic này để tương thích với các bước xử lý
         company1_name = data.get('company1Name', '1').strip()
         company2_name = data.get('company2Name', '2').strip()
 
@@ -600,7 +632,7 @@ def process_data():
         if error:
             return jsonify({"success": False, "error": error}), 400
         if not all_pallets:
-             return jsonify({"success": False, "error": "Không có dữ liệu pallet hợp lệ để xử lý."}), 400
+              return jsonify({"success": False, "error": "Không có dữ liệu pallet hợp lệ để xử lý."}), 400
 
         container_id_counter = {'count': 1}
         
@@ -634,24 +666,21 @@ def process_data():
             container.id = f"Cont_{i}"
 
         # --- GIAI ĐOẠN 2: CHUYỂN ĐỔI KẾT QUẢ SANG JSON VÀ TRẢ VỀ ---
-        # Sử dụng hàm generate_response_data đã có để tạo đúng định dạng JSON
-        # mà frontend mong đợi.
         response_data = generate_response_data(all_final_containers)
 
         gc.collect() # Dọn dẹp bộ nhớ
         
-        # Trả về kết quả dưới dạng JSON
         return jsonify(response_data)
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        # Trả về lỗi dưới dạng JSON
         return jsonify({"success": False, "error": f"Đã xảy ra lỗi hệ thống không mong muốn: {str(e)}"}), 500
+
 
 @app.route('/api/generate_packing_list', methods=['POST'])
 def generate_packing_list_endpoint():
-    print("\n[BACKEND] Bắt đầu xử lý /api/generate_packing_list với logic HYBRID")
+    print("\n[BACKEND] Bắt đầu xử lý /api/generate_packing_list với logic TÁI CÂN BẰNG")
     try:
         data = request.get_json()
         optimized_results = data.get('optimized_results')
@@ -665,21 +694,19 @@ def generate_packing_list_endpoint():
         if error:
             return jsonify({"success": False, "error": error}), 500
 
-        # --- KHỞI TẠO CÁC BIẾN VÀ TRACKER ---
-        processed_pcs_tracker = {} # Theo dõi tổng số PCS đã xử lý cho mỗi sản phẩm
-        pallet_counter = {'item_no': 1, 'pallet_no': 1}
+        # --- BƯỚC 1: TẠO DỮ LIỆU PKL NHÁP (DRAFT) ---
+        draft_pallet_counter = {'item_no': 1, 'pallet_no': 1}
+        processed_pcs_tracker = {}
+        total_fractional_quantity = {}
+        processed_fractional_quantity = {}
+        
         optimized_results.sort(key=lambda x: int(re.search(r'\d+', x['id']).group()))
-
-        # Đánh số lại ID cho mỗi container trong danh sách
         for i, container_data in enumerate(optimized_results, 1):
             container_data['id'] = f"Cont_{i}"
-        
-        container_rows = {container['id']: [] for container in optimized_results}
+
+        draft_container_rows = {container['id']: [] for container in optimized_results}
         unprocessed_fractions_all = {container['id']: [] for container in optimized_results}
 
-        # --- CẬP NHẬT MỚI: TÍNH TOÁN TRƯỚC TỔNG TỶ LỆ LẺ VÀ KHỞI TẠO TRACKER ---
-        total_fractional_quantity = {} # Lưu tổng tỷ lệ lẻ của mỗi sản phẩm
-        
         for container_data in optimized_results:
             for content_block in container_data.get('contents', []):
                 items = content_block.get('items', []) if content_block.get('type') == 'CombinedPallet' else [content_block]
@@ -690,112 +717,119 @@ def generate_packing_list_endpoint():
                         product_code = item['product_code']
                         total_fractional_quantity[product_code] = total_fractional_quantity.get(product_code, 0) + fractional_part
         
-        processed_fractional_quantity = {} # Theo dõi tỷ lệ lẻ đã xử lý cho mỗi sản phẩm
-
-        # --- LƯỢT 1: XỬ LÝ TOÀN BỘ CÁC PALLET NGUYÊN (Logic không đổi) ---
-        print("[BACKEND] Lượt 1: Đang xử lý các pallet NGUYÊN...")
-        # ... (Toàn bộ code của Lượt 1 giữ nguyên như trong file của bạn) ...
+        # Lượt 1: Pallet nguyên
         for container_data in optimized_results:
             container_id = container_data['id']
             for content_block in container_data.get('contents', []):
-                items_to_process = []
-                if content_block.get('type') == 'SinglePallet':
-                    items_to_process.append(content_block)
-                else: # CombinedPallet
-                    items_to_process = content_block.get('items', [])
-                
-                for item in items_to_process:
+                items = content_block.get('items', []) if content_block.get('type') == 'CombinedPallet' else [content_block]
+                for item in items:
                     item_total_pallet = _safe_float(item.get('quantity'))
                     integer_part = math.floor(item_total_pallet)
                     fractional_part = item_total_pallet - integer_part
-
                     if integer_part > 0:
-                        pseudo_single_pallet_block = {
-                            'product_code': item['product_code'],
-                            'product_name': item['product_name'],
-                        }
+                        pseudo_single = {'product_code': item['product_code'], 'product_name': item['product_name']}
                         for _ in range(int(integer_part)):
-                            calculated_pcs = _render_single_pallet_unit(
-                                pseudo_single_pallet_block, raw_data_map, pallet_counter, container_rows[container_id]
-                            )
-                            current_product_code = item['product_code']
-                            processed_pcs_tracker[current_product_code] = processed_pcs_tracker.get(current_product_code, 0) + calculated_pcs
-                    
+                            pcs = _render_single_pallet_unit(pseudo_single, raw_data_map, draft_pallet_counter, draft_container_rows[container_id])
+                            processed_pcs_tracker[item['product_code']] = processed_pcs_tracker.get(item['product_code'], 0) + pcs
                     if fractional_part > 1e-6:
-                        unprocessed_fractions_all[container_id].append({
-                            "product_code": item['product_code'],
-                            "product_name": item['product_name'],
-                            "company": item.get('company'),
-                            "quantity": fractional_part
-                        })
+                        unprocessed_fractions_all[container_id].append({ "product_code": item['product_code'], "product_name": item['product_name'], "company": item.get('company'), "quantity": fractional_part })
 
-        # --- LƯỢT 2: XỬ LÝ CÁC PALLET LẺ (Logic gom nhóm giữ nguyên, chỉ thay đổi lời gọi hàm) ---
-        print("[BACKEND] Lượt 2: Đang xử lý các pallet LẺ...")
+        # Lượt 2: Pallet lẻ
         for container_id, fractions in unprocessed_fractions_all.items():
-            if not fractions:
-                continue
-
+            if not fractions: continue
             fractions.sort(key=lambda x: x['quantity'], reverse=True)
             while fractions:
                 current_group = [fractions.pop(0)]
                 current_total_ratio = current_group[0]['quantity']
-                
                 i = 0
                 while i < len(fractions):
                     if current_total_ratio + fractions[i]['quantity'] <= 1.0 + 1e-6:
                         item_to_add = fractions.pop(i)
                         current_total_ratio += item_to_add['quantity']
                         current_group.append(item_to_add)
-                    else:
-                        i += 1
+                    else: i += 1
                 
-                pseudo_combined_pallet = {'type': 'CombinedPallet', 'items': current_group}
-                
-                # --- CẬP NHẬT MỚI: TRUYỀN CÁC TRACKER MỚI VÀO HÀM ---
-                _render_combined_pallet_block(
-                    pseudo_combined_pallet, 
-                    raw_data_map, 
-                    pallet_counter, 
-                    container_rows[container_id], 
-                    current_total_ratio, 
-                    processed_pcs_tracker,
-                    total_fractional_quantity,    # <<-- Mới
-                    processed_fractional_quantity # <<-- Mới
-                )
+                pseudo_combined = {'type': 'CombinedPallet', 'items': current_group}
+                _render_combined_pallet_block(pseudo_combined, raw_data_map, draft_pallet_counter, draft_container_rows[container_id], current_total_ratio, processed_pcs_tracker, total_fractional_quantity, processed_fractional_quantity)
 
-        # --- BƯỚC 3: GHI KẾT QUẢ RA FILE EXCEL (Logic không đổi) ---
-        print("[BACKEND] Đang tạo file Excel...")
-        # ... (Toàn bộ code của Bước 3 giữ nguyên như trong file của bạn) ...
-        wb = Workbook()
-        wb.remove(wb.active)
-        cumulative_totals = {'pcs': 0.0, 'nw': 0.0, 'gw': 0.0}
-        
-        pallet_no_cumulative = 0
+        # --- BƯỚC 2: TÁI CÂN BẰNG VÀ TẠO PKL HOÀN CHỈNH ---
+        print("[BACKEND] Bắt đầu tái cân bằng Packing List...")
+        finalized_dfs = {}
+        final_pkl_counter = {'item_no': 1, 'pallet_no': 1}
 
         for container_data in optimized_results:
             container_id = container_data['id']
-            rows = container_rows[container_id]
-            if not rows:
+            draft_rows = draft_container_rows.get(container_id)
+            
+            if not draft_rows:
+                print(f"  - Container {container_id}: Bỏ qua vì không có dữ liệu.")
                 continue
+            
+            print(f"  - Đang xử lý Container {container_id}...")
+            df_draft_pkl = pd.DataFrame(draft_rows)
+            
+            kept_pallets, waiting_queue_items = _collect_items_for_rebalancing(df_draft_pkl.copy())
+            rebalanced_pallets = _process_waiting_queue(waiting_queue_items)
+            final_df = _generate_final_pkl_dataframe(kept_pallets, rebalanced_pallets, final_pkl_counter)
+            
+            if not final_df.empty:
+                finalized_dfs[container_id] = final_df
 
-            df_for_pkl = pd.DataFrame(rows)
+        # --- BƯỚC 3: GHI KẾT QUẢ RA FILE EXCEL (LOGIC ĐÃ SỬA) ---
+        print("[BACKEND] Đang tạo file Excel từ kết quả đã cân bằng...")
+        wb = Workbook()
+        wb.remove(wb.active) # Xóa sheet mặc định
+
+        sorted_container_ids = sorted(finalized_dfs.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
+
+        # **PHẦN LOGIC TÍNH TOÁN DỒN MỚI**
+        # PASS 1: TÍNH TOÁN VÀ LƯU TRỮ TRƯỚC TẤT CẢ CÁC GIÁ TRỊ TỔNG DỒN
+        # Logic được viết lại để đơn giản, chính xác và loại bỏ lỗi đếm sai.
+        case_mark_data_map = {}
+        cumulative_pallet_count = 0
+        cumulative_pcs = 0.0
+        cumulative_nw = 0.0
+        cumulative_gw = 0.0
+
+        # Lặp qua các container để tính toán và lưu trữ tổng dồn một cách chính xác
+        for container_id in sorted_container_ids:
+            df = finalized_dfs[container_id]
+            
+            # SỬA LỖI: Chỉ đếm các pallet có tên (không phải chuỗi rỗng)
+            current_pallet_count = df.loc[df['Pallet'] != '', 'Pallet'].nunique()
+
+            # Cập nhật các giá trị tổng dồn
+            cumulative_pallet_count += current_pallet_count
+            cumulative_pcs += df["Q'ty (pcs)"].sum()
+            cumulative_nw += df['N.W (kgs)'].sum()
+            cumulative_gw += df['G.W (kgs)'].sum()
+            
+            # Lưu trữ kết quả tính dồn cho container này
+            case_mark_data_map[container_id] = {
+                'cumulative_pallet_count': cumulative_pallet_count,
+                'cumulative_pcs': cumulative_pcs,
+                'cumulative_nw': cumulative_nw,
+                'cumulative_gw': cumulative_gw
+            }
+
+        # PASS 2: TẠO TỪNG SHEET EXCEL VỚI DỮ LIỆU ĐÃ TÍNH TOÁN TRƯỚC
+        for container_id in sorted_container_ids:
+            df_for_pkl = finalized_dfs[container_id]
             container_id_num = ''.join(filter(str.isdigit, container_id))
-
             ws = wb.create_sheet(title=f"PKL_Cont_{container_id_num}")
-            
-            cumulative_totals['pcs'] += df_for_pkl["Q'ty (pcs)"].sum()
-            cumulative_totals['nw'] += df_for_pkl['N.W (kgs)'].sum()
-            cumulative_totals['gw'] += df_for_pkl['G.W (kgs)'].sum()
-            
-            if not df_for_pkl.empty:
-                 pallet_no_cumulative += df_for_pkl['Pallet'].nunique()
 
+            # Lấy dữ liệu tổng dồn đã được tính toán cho container hiện tại
+            current_case_mark_data = case_mark_data_map[container_id]
+
+            # Gọi hàm ghi vào sheet với dữ liệu chính xác
             write_packing_list_to_sheet(
-                ws, df_for_pkl, container_id_num,
-                pallet_no_cumulative,
-                cumulative_totals['pcs'],
-                cumulative_totals['nw'],
-                cumulative_totals['gw']
+                ws, 
+                df_for_pkl, 
+                container_id_num,
+                current_case_mark_data['cumulative_pallet_count'],
+                current_case_mark_data['cumulative_pcs'],
+                current_case_mark_data['cumulative_nw'],
+                current_case_mark_data['cumulative_gw']
             )
 
         excel_buffer = io.BytesIO()
@@ -816,7 +850,6 @@ def generate_packing_list_endpoint():
         print(f"\n\n[BACKEND] !!! ĐÃ XẢY RA LỖI KHÔNG MONG MUỐN !!!")
         print(error_details)
         return jsonify({"success": False, "error": f"Lỗi nghiêm trọng ở backend: {str(e)}"}), 500
-
 
 # --- CHẠY ỨNG DỤNG ---
 if __name__ == '__main__':
