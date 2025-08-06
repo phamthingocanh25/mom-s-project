@@ -279,7 +279,7 @@ def load_and_prepare_pallets(filepath, sheet_name):
         df['company'] = pd.to_numeric(df['company'], errors='coerce')
 
 # 2. Thay thế các giá trị NaN (ví dụ: ô trống) bằng một số mặc định, ở đây là 0
-        df['company'].fillna(0, inplace=True)
+        df['company'] = df['company'].fillna(0)
 
 # 3. Chuyển đổi cột số thành kiểu số nguyên để loại bỏ phần thập phân ".0"
         df['company'] = df['company'].astype(int)
@@ -665,6 +665,324 @@ def layered_priority_packing(pallets_integer, pallets_combined, pallets_single_f
 
     return packed_containers
 ####################   GIAI ĐOẠN 2    #########################
+def find_best_split_move(pallet_to_split, available_containers):
+    """
+    Tìm nước đi chia pallet tốt nhất (container và số lượng) dựa trên bộ quy tắc ưu tiên.
+    
+    Quy tắc:
+    1. Ưu tiên tuyệt đối việc tách ra một số NGUYÊN các pallet (1.0, 2.0, ...)
+       và đặt vào container có không gian vừa vặn nhất.
+    2. Nếu không thể đi nước đi số nguyên, sẽ tìm cách chia để lấp đầy container
+       một cách vừa vặn nhất (để lại ít khoảng trống nhất - chiến lược best-fit).
+
+    Trả về: (container tốt nhất, số lượng pallet cần tách) hoặc (None, 0) nếu không có nước đi hợp lệ.
+    """
+    # --- QUY TẮC 1: TÌM NƯỚC ĐI SỐ NGUYÊN TỐT NHẤT ---
+    best_integer_move = {'container': None, 'quantity': 0, 'wasted_space': float('inf')}
+    
+    # Chỉ xem xét nếu pallet gốc có thể tách ra ít nhất 1.0
+    if pallet_to_split.quantity >= 1.0:
+        for container in available_containers:
+            # Số pallet nguyên tối đa có thể tách ra để cho vào container này
+            possible_integer_pallets = math.floor(min(pallet_to_split.quantity, container.remaining_quantity))
+            
+            if possible_integer_pallets >= 1:
+                # Kiểm tra xem có đủ tải trọng không
+                weight_needed = possible_integer_pallets * pallet_to_split.weight_per_pallet
+                if container.remaining_weight >= weight_needed:
+                    # Tính điểm "lãng phí" (không gian còn thừa)
+                    wasted_space = container.remaining_quantity - possible_integer_pallets
+                    
+                    # Lưu lại nếu nước đi này tốt hơn (ít lãng phí hơn) các nước đi số nguyên trước
+                    if wasted_space < best_integer_move['wasted_space']:
+                        best_integer_move.update({
+                            'container': container,
+                            'quantity': float(possible_integer_pallets),
+                            'wasted_space': wasted_space
+                        })
+    
+    # Nếu đã tìm được một nước đi số nguyên hợp lệ, đây là ưu tiên hàng đầu -> trả về ngay
+    if best_integer_move['container']:
+        return best_integer_move['container'], best_integer_move['quantity']
+
+    # --- QUY TẮC 2: TÌM NƯỚC ĐI LẤP ĐẦY (BEST-FIT) TỐT NHẤT ---
+    best_fill_move = {'container': None, 'quantity': 0, 'remaining_gap': float('inf')}
+
+    for container in available_containers:
+        # Tính lượng tối đa có thể cho vào container này (xét cả số lượng và tải trọng)
+        max_qty_by_weight = container.remaining_weight / pallet_to_split.weight_per_pallet if pallet_to_split.weight_per_pallet > 0 else float('inf')
+        possible_split_qty = min(container.remaining_quantity, max_qty_by_weight)
+
+        # Bỏ qua nếu lượng có thể chia quá nhỏ
+        if possible_split_qty < MIN_PRACTICAL_SPLIT_QTY:
+            continue
+
+        # Bỏ qua nếu việc chia sẽ tạo ra một mảnh thừa quá nhỏ và vô dụng
+        remainder = pallet_to_split.quantity - possible_split_qty
+        if remainder > EPSILON and remainder < MIN_PRACTICAL_SPLIT_QTY:
+            continue
+            
+        # Tìm nước đi lấp đầy vừa vặn nhất (để lại khoảng trống trong cont nhỏ nhất)
+        remaining_gap = container.remaining_quantity - possible_split_qty
+        if remaining_gap < best_fill_move['remaining_gap']:
+             best_fill_move.update({
+                 'container': container,
+                 'quantity': possible_split_qty,
+                 'remaining_gap': remaining_gap
+             })
+
+    if best_fill_move['container']:
+        return best_fill_move['container'], best_fill_move['quantity']
+        
+    # Nếu không tìm thấy bất kỳ nước đi hợp lệ nào
+    return None, 0
+def _place_pallet_with_priority(pallet, containers):
+    """
+    Cố gắng xếp một pallet vào các container theo logic ưu tiên mới, tập trung
+    vào việc giữ các thành phần trong cùng công ty và giảm thiểu việc chia tách.
+
+    Hàm này sẽ trả về phần pallet còn lại không thể xếp được (nếu có),
+    hoặc trả về None nếu toàn bộ pallet đã được xếp thành công.
+
+    --- LOGIC ƯU TIÊN MỚI (SỬA ĐỔI) ---
+    1.  **Xếp nguyên vẹn:** Cố gắng xếp toàn bộ pallet vào một container duy nhất,
+        ưu tiên container CÙNG CÔNG TY trước.
+
+    2.  **Chia (Phần nguyên + Phần lẻ):** Nếu không thể xếp nguyên vẹn, thử chia pallet
+        thành (phần nguyên, phần lẻ, và phần thừa). Cố gắng xếp CẢ PHẦN NGUYÊN
+        và PHẦN LẺ vào các container CÙNG CÔNG TY. Phần thừa sau đó sẽ được xử lý
+        theo một logic ưu tiên riêng.
+
+    3.  **Xử lý phần thừa (sau Ưu tiên 2):**
+        a. Cố gắng xếp nguyên vẹn phần thừa vào bất kỳ container nào (ưu tiên cùng công ty).
+        b. Nếu không được, ưu tiên tách MỘT PHẦN NGUYÊN từ phần thừa để xếp vào container CÙNG CÔNG TY.
+        c. Phần còn lại cuối cùng sẽ được xếp vào các container khác công ty, ưu tiên
+           tách số nguyên ("sạch") trước, sau đó mới lấp đầy.
+
+    4.  **Chia nhỏ lấp đầy (Biện pháp cuối):** Nếu các bước trên thất bại, chia nhỏ
+        pallet để lấp đầy các khoảng trống còn lại trong các container, ưu tiên
+        container cùng công ty trước.
+    """
+    # --- HÀM HỖ TRỢ ---
+    def find_best_fit(p, cont_list):
+        """Tìm container trong danh sách vừa vặn nhất cho pallet p."""
+        best_cont = None
+        min_rem_space = float('inf')
+        for c in cont_list:
+            if c.can_fit(p):
+                rem_space = c.remaining_quantity - p.quantity
+                if rem_space < min_rem_space:
+                    min_rem_space = rem_space
+                    best_cont = c
+        return best_cont
+
+    # --- KHỞI TẠO ---
+    same_co_containers = sorted([c for c in containers if c.main_company == pallet.company], key=lambda c: c.remaining_quantity)
+    other_co_containers = sorted([c for c in containers if c.main_company != pallet.company], key=lambda c: c.remaining_quantity)
+
+    # --- ƯU TIÊN 1: CỐ GẮNG XẾP NGUYÊN VẸN ---
+    all_available_containers_p1 = same_co_containers + other_co_containers
+    target_container = find_best_fit(pallet, all_available_containers_p1)
+    if target_container:
+        target_container.add_pallet(pallet)
+        return None  # Xếp thành công, không còn pallet thừa
+    # --- LOGIC MỚI: KIỂM TRA KHẢ NĂNG XẾP NGUYÊN VẸN SANG CTY KHÁC ---
+    target_container_other_co_full_fit = find_best_fit(pallet, other_co_containers)
+    
+    # --- ƯU TIÊN 2-B: TỐI ƯU HÓA TRƯỚC KHI VẬN CHUYỂN CHÉO ---
+    if target_container_other_co_full_fit:
+        # KÍCH HOẠT: Có thể vận chuyển chéo nguyên pallet. Thay vì làm ngay, hãy thử tối ưu.
+
+        # a. Thử chia "sạch" theo số nguyên (ví dụ 6.7 -> 6.0 + 0.7)
+        if pallet.quantity >= 1.0:
+            original_int_q = math.floor(pallet.quantity)
+            # Lặp ngược từ phần nguyên lớn nhất có thể
+            for int_q_to_try in range(original_int_q, 0, -1):
+                p_remainder, p_integer_part = pallet.split(float(int_q_to_try))
+                if not p_integer_part or not p_remainder:
+                    continue
+
+                # Cố gắng xếp phần nguyên lớn vào container cùng công ty
+                int_part_container_target = find_best_fit(p_integer_part, same_co_containers)
+                if int_part_container_target:
+                    # Nếu được, kiểm tra xem phần lẻ có thể xếp vào container khác công ty không
+                    if target_container_other_co_full_fit.can_fit(p_remainder):
+                        # THÀNH CÔNG: Đây là kịch bản tối ưu nhất
+                        int_part_container_target.add_pallet(p_integer_part)
+                        target_container_other_co_full_fit.add_pallet(p_remainder)
+                        return None  # Xếp xong, kết thúc
+
+        # b. Nếu chia số nguyên không được, thử giữ lại phần lớn nhất có thể ở cùng công ty
+        best_split_option = {
+            'part_for_same_co': None, 'rem_for_other_co': None,
+            'same_co_container_target': None, 'qty_for_same_co': 0
+        }
+        for s_cont in same_co_containers:
+            if s_cont.remaining_quantity < MIN_PRACTICAL_SPLIT_QTY:
+                continue
+
+            max_qty_by_weight = (s_cont.remaining_weight / pallet.weight_per_pallet) if pallet.weight_per_pallet > EPSILON else float('inf')
+            possible_qty_to_place = min(s_cont.remaining_quantity, max_qty_by_weight, pallet.quantity)
+            
+            # Bỏ qua nếu việc chia tạo ra mảnh thừa quá nhỏ
+            remainder_qty = pallet.quantity - possible_qty_to_place
+            if remainder_qty > EPSILON and remainder_qty < MIN_PRACTICAL_SPLIT_QTY:
+                continue
+
+            # Ưu tiên giữ lại lượng lớn nhất có thể
+            if possible_qty_to_place > best_split_option['qty_for_same_co']:
+                rem_part, part_for_same_co = pallet.split(possible_qty_to_place)
+                # Kiểm tra xem phần còn lại có vừa với cont khác công ty không
+                if rem_part and part_for_same_co and target_container_other_co_full_fit.can_fit(rem_part):
+                    best_split_option.update({
+                        'part_for_same_co': part_for_same_co,
+                        'rem_for_other_co': rem_part,
+                        'same_co_container_target': s_cont,
+                        'qty_for_same_co': possible_qty_to_place
+                    })
+        
+        # Nếu tìm thấy một phương án chia tách tốt
+        if best_split_option['part_for_same_co']:
+            s_cont_target = best_split_option['same_co_container_target']
+            s_cont_target.add_pallet(best_split_option['part_for_same_co'])
+            target_container_other_co_full_fit.add_pallet(best_split_option['rem_for_other_co'])
+            return None # Xếp xong, kết thúc
+
+        # c. BIỆN PHÁP CUỐI: Nếu không tối ưu được, thực hiện vận chuyển chéo nguyên pallet
+        target_container_other_co_full_fit.add_pallet(pallet)
+        return None
+
+    # --- ƯU TIÊN 2: CHIA (PHẦN NGUYÊN + PHẦN LẺ) VÀ XẾP VÀO CÙNG CÔNG TY ---
+    is_float_pallet = abs(pallet.quantity - round(pallet.quantity)) > EPSILON
+    if pallet.quantity >= 1.0 and is_float_pallet:
+        original_int_q = math.floor(pallet.quantity)
+        original_frac_q = pallet.quantity - original_int_q
+
+        # Lặp ngược từ phần nguyên lớn nhất có thể tách ra
+        for int_q_to_try in range(original_int_q, 0, -1):
+            rem_after_int, p_int = pallet.split(int_q_to_try)
+            if not p_int or not rem_after_int:
+                continue
+
+            p_leftover, p_frac = rem_after_int.split(original_frac_q)
+            if not p_frac:
+                continue
+
+            int_cont = find_best_fit(p_int, same_co_containers)
+            if not int_cont:
+                continue
+
+            # Tìm nơi cho phần lẻ, ưu tiên chính container chứa phần nguyên
+            frac_cont = None
+            if int_cont.can_fit(p_frac):
+                 frac_cont = int_cont
+            else:
+                 # Nếu không, tìm ở các container cùng công ty còn lại
+                 other_same_co_conts = [c for c in same_co_containers if c.id != int_cont.id]
+                 frac_cont = find_best_fit(p_frac, other_same_co_conts)
+
+            # Nếu tìm được nơi cho cả hai phần nguyên và lẻ
+            if frac_cont:
+                int_cont.add_pallet(p_int)
+                frac_cont.add_pallet(p_frac)
+
+                # --- BẮT ĐẦU LOGIC MỚI ĐỂ XỬ LÝ PHẦN THỪA (p_leftover) ---
+                pallet_remains = p_leftover
+                if pallet_remains and pallet_remains.quantity > EPSILON:
+                    # BƯỚC 2.1 (Tương tự Ưu tiên 1): Cố gắng xếp nguyên vẹn phần thừa
+                    all_available_containers_p2 = same_co_containers + other_co_containers
+                    leftover_fit_container = find_best_fit(pallet_remains, all_available_containers_p2)
+                    if leftover_fit_container:
+                        leftover_fit_container.add_pallet(pallet_remains)
+                        return None # Xếp xong toàn bộ, kết thúc
+
+                    # BƯỚC 2.2: Ưu tiên tách phần NGUYÊN cho container CÙNG CÔNG TY
+                    unplaced_part = pallet_remains
+                    for container in same_co_containers:
+                        if unplaced_part is None or unplaced_part.quantity < 1.0:
+                            break
+
+                        if container.remaining_quantity >= 1.0:
+                            possible_int_qty = math.floor(min(unplaced_part.quantity, container.remaining_quantity))
+                            weight_for_int_part = possible_int_qty * unplaced_part.weight_per_pallet
+
+                            if container.remaining_weight >= weight_for_int_part and possible_int_qty > 0:
+                                remaining_part, int_part = unplaced_part.split(float(possible_int_qty))
+                                if int_part:
+                                    container.add_pallet(int_part)
+                                    unplaced_part = remaining_part
+
+                    pallet_remains = unplaced_part
+
+                # BƯỚC 2.3: Xử lý phần còn lại cuối cùng với container KHÁC CÔNG TY
+                if pallet_remains and pallet_remains.quantity > EPSILON:
+                    for container in other_co_containers:
+                        if pallet_remains is None or pallet_remains.quantity < EPSILON:
+                            break
+
+                        # Logic "tách số thông minh": ưu tiên tách số nguyên
+                        split_qty = 0
+                        if pallet_remains.quantity >= 1.0 and container.remaining_quantity >= 1.0:
+                            possible_int_qty = math.floor(min(pallet_remains.quantity, container.remaining_quantity))
+                            weight_for_int_part = possible_int_qty * pallet_remains.weight_per_pallet
+                            if container.remaining_weight >= weight_for_int_part and possible_int_qty > 0:
+                                split_qty = float(possible_int_qty)
+
+                        # Nếu không thể tách số nguyên, thì tách để lấp đầy
+                        if split_qty == 0:
+                            max_qty_by_weight = (container.remaining_weight / pallet_remains.weight_per_pallet) if pallet_remains.weight_per_pallet > EPSILON else float('inf')
+                            possible_fill_qty = min(container.remaining_quantity, max_qty_by_weight)
+
+                            if possible_fill_qty >= MIN_PRACTICAL_SPLIT_QTY:
+                                if (pallet_remains.quantity - possible_fill_qty) < MIN_PRACTICAL_SPLIT_QTY and (pallet_remains.quantity - possible_fill_qty) > EPSILON:
+                                    continue
+                                else:
+                                    split_qty = possible_fill_qty
+
+                        if split_qty > EPSILON:
+                            rem_part, new_part = pallet_remains.split(split_qty)
+                            if new_part:
+                                container.add_pallet(new_part)
+                                pallet_remains = rem_part
+
+                if pallet_remains and pallet_remains.quantity > EPSILON:
+                     return pallet_remains
+                else:
+                     return None # Xếp thành công
+
+    # --- ƯU TIÊN 4: CHIA NHỎ LẤP ĐẦY (BIỆN PHÁP CUỐI) ---
+    # Logic này áp dụng cho các pallet không thể xử lý bằng các bước trên
+    pallet_remains = pallet
+    all_containers_sorted = same_co_containers + other_co_containers
+
+    for container in all_containers_sorted:
+        if not pallet_remains or pallet_remains.quantity < EPSILON:
+            break
+
+        if container.remaining_quantity < MIN_PRACTICAL_SPLIT_QTY:
+            continue
+
+        max_qty_by_weight = (container.remaining_weight / pallet_remains.weight_per_pallet) if pallet_remains.weight_per_pallet > EPSILON else float('inf')
+        qty_to_fit = min(container.remaining_quantity, max_qty_by_weight)
+
+        if qty_to_fit >= pallet_remains.quantity - EPSILON:
+            container.add_pallet(pallet_remains)
+            pallet_remains = None
+            break
+
+        if qty_to_fit >= MIN_PRACTICAL_SPLIT_QTY:
+            if (pallet_remains.quantity - qty_to_fit) < MIN_PRACTICAL_SPLIT_QTY and (pallet_remains.quantity - qty_to_fit) > EPSILON:
+                continue
+
+            rem_part, new_part = pallet_remains.split(qty_to_fit)
+            if rem_part and new_part:
+                container.add_pallet(new_part)
+                pallet_remains = rem_part
+
+    if pallet_remains and pallet_remains.quantity > EPSILON:
+        return pallet_remains
+    return None
+
 # --- HẰNG SỐ CẤU HÌNH CHO GIAI ĐOẠN 2 (CẬP NHẬT) ---
 THRESHOLD_FILL_RATE = 0.25      # Tỷ lệ lấp đầy tối thiểu (ví dụ: 25%)
 THRESHOLD_PALLET_COUNT = 2      # Số lượng pallet tối thiểu (ví dụ: 2)
@@ -675,11 +993,9 @@ MIN_PRACTICAL_SPLIT_QTY = 0.25
 def defragment_and_consolidate(initial_packed_containers):
     """
     Giai đoạn 2: Tối ưu hóa Container bằng cách Chống phân mảnh và Hợp nhất.
-    PHIÊN BẢN SỬA ĐỔI:
-    - Ưu tiên xếp nguyên vẹn các pallet trước khi xem xét việc tách nhỏ.
-    - Khi tách, đảm bảo các mảnh được tạo ra có kích thước thực tế, không quá nhỏ.
+    Sử dụng logic phân bổ mới có thứ tự ưu tiên để giảm thiểu việc chia tách pallet không cần thiết.
     """
-    # Bước 2.1: Xác định Container "Lãng phí" (Giữ nguyên logic gốc)
+    # Bước 2.1: Xác định Container "Tốt" và "Lãng phí" (logic giữ nguyên)
     good_containers = []
     wasteful_containers = []
 
@@ -697,77 +1013,29 @@ def defragment_and_consolidate(initial_packed_containers):
     if not wasteful_containers:
         return good_containers, []
 
-    # Bước 2.2: Tạo Bể Pallet Tái phân bổ (Giữ nguyên logic gốc)
+    # Bước 2.2: Gom các pallet từ container lãng phí vào một danh sách để tái phân bổ
     pallets_for_redeployment = []
     for container in wasteful_containers:
         pallets_for_redeployment.extend(container.pallets)
 
-    # Sắp xếp pallet để xử lý pallet lớn nhất trước
+    # Sắp xếp các pallet cần xếp lại từ lớn đến nhỏ để xử lý các pallet khó trước
     pallets_for_redeployment.sort(key=lambda p: p.quantity, reverse=True)
 
-    # --- BƯỚC 2.3: TÁI PHÂN BỔ THÔNG MINH (LOGIC MỚI) ---
-    unplaced_pallets = []
 
-    # PASS 1: Ưu tiên xếp NGUYÊN VẸN các pallet vào các khoảng trống phù hợp nhất (Best-Fit).
-    # Sắp xếp các container theo không gian trống nhỏ nhất để tìm chỗ vừa nhất.
-    good_containers.sort(key=lambda c: c.remaining_quantity)
-
+    # Bước 2.3: Tái phân bổ thông minh sử dụng logic ưu tiên mới
+    pallets_still_unplaced = []
     for pallet in pallets_for_redeployment:
-        best_fit_container = None
-        min_rem_space = float('inf')
-
-        for container in good_containers:
-            if container.can_fit(pallet):
-                # Tìm container vừa vặn nhất (để lại ít không gian thừa nhất)
-                rem_space = container.remaining_quantity - pallet.quantity
-                if rem_space < min_rem_space:
-                    min_rem_space = rem_space
-                    best_fit_container = container
-
-        if best_fit_container:
-            best_fit_container.add_pallet(pallet)
-        else:
-            # Nếu không tìm được chỗ để xếp nguyên vẹn, đưa vào danh sách chờ tách
-            unplaced_pallets.append(pallet)
-
-    # PASS 2: Với các pallet không thể xếp nguyên vẹn, tiến hành TÁCH NHỎ nếu hợp lý.
-    pallets_for_cross_shipping = []
-    for pallet_to_split in unplaced_pallets:
-        pallet_remains = pallet_to_split
-
-        # Sắp xếp lại container theo không gian trống lớn nhất để có cơ hội tách tốt hơn
-        good_containers.sort(key=lambda c: c.remaining_quantity, reverse=True)
-
-        for container in good_containers:
-            if pallet_remains is None or pallet_remains.quantity < EPSILON:
-                break # Pallet đã được xếp hết
-
-            # Chỉ xem xét tách nếu khoảng trống trong container đủ lớn một cách hợp lý
-            if container.remaining_quantity > MIN_PRACTICAL_SPLIT_QTY:
-                max_qty_by_weight = float('inf')
-                if pallet_remains.weight_per_pallet > 0:
-                    max_qty_by_weight = container.remaining_weight / pallet_remains.weight_per_pallet
-
-                split_quantity = min(container.remaining_quantity, max_qty_by_weight)
-
-                # KIỂM TRA QUAN TRỌNG: Chỉ tách nếu phần được tách ra (new_part) và
-                # phần còn lại (original_part) đều có kích thước lớn hơn ngưỡng tối thiểu.
-                if split_quantity > MIN_PRACTICAL_SPLIT_QTY and \
-                   (pallet_remains.quantity - split_quantity) > MIN_PRACTICAL_SPLIT_QTY:
-
-                    original_part, new_part = pallet_remains.split(split_quantity)
-
-                    if original_part and new_part:
-                        container.add_pallet(new_part)
-                        pallet_remains = original_part # Cập nhật phần còn lại để xử lý tiếp
+        # Gọi hàm phụ trợ để thực hiện việc xếp pallet
+        unplaced_remainder = _place_pallet_with_priority(pallet, good_containers)
         
-        # Nếu sau khi thử tất cả các container mà pallet vẫn còn, đưa vào danh sách chờ vận chuyển chéo
-        if pallet_remains is not None and pallet_remains.quantity > EPSILON:
-            pallets_for_cross_shipping.append(pallet_remains)
+        # Nếu sau tất cả các bước vẫn còn phần dư -> đưa vào danh sách chờ cuối cùng
+        if unplaced_remainder and unplaced_remainder.quantity > EPSILON:
+            pallets_still_unplaced.append(unplaced_remainder)
 
     final_containers = good_containers
-    return final_containers, pallets_for_cross_shipping
+    pallets_for_cross_shipping = pallets_still_unplaced
 
+    return final_containers, pallets_for_cross_shipping
 ####################   GIAI ĐOẠN 3    #########################
 # --- CÁC HÀM PHỤ TRỢ CHO GIAI ĐOẠN 3 ---
 

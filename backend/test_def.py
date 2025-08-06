@@ -667,8 +667,8 @@ def run_packing_list_test(final_containers_objects, file_path, sheet_name):
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1: Cấu hình ---
-    file_path = "C:\\Users\\emily\\Documents\\Zalo Received Files\\Chia-cont-testing.xlsx"
-    sheet_name = "23 Jun "
+    file_path = "C:\\Users\\emily\\Downloads\\Chia-cont-2025-filled-data (1).xlsx"
+    sheet_name = "8 Apr"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
 
