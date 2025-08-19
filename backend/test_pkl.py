@@ -21,7 +21,7 @@ try:
         load_and_map_raw_data_for_pkl
     )
     from app import (
-        _generate_dataframe_for_container,
+        _generate_final_pkl_dataframe ,
         write_packing_list_to_sheet
     )
     print("INFO: Đã import thành công các hàm từ data_processor.py và app.py.")
@@ -147,7 +147,7 @@ def run_packing_list_generation(optimized_results, original_filepath, sheet_name
         ws = wb.create_sheet(title=sheet_title)
 
         # Chuẩn bị dữ liệu và ghi vào sheet
-        df_for_pkl = _generate_dataframe_for_container(container_data, raw_data_map, pallet_counter)
+        df_for_pkl = _generate_final_pkl_dataframe(container_data, raw_data_map, pallet_counter)
         
         # --- START: SỬA LỖI ---
         # Cập nhật các giá trị tổng dồn sau khi xử lý mỗi container
@@ -188,10 +188,10 @@ if __name__ == '__main__':
     # !!! QUAN TRỌNG: THAY ĐỔI CÁC GIÁ TRỊ DƯỚI ĐÂY !!!
     
     # 1. Đường dẫn file Excel dữ liệu thô (giữ nguyên)
-    INPUT_EXCEL_FILE = "C:\\Users\\emily\\Documents\\Zalo Received Files\\Chia cont - 2025(AutoRecovered).xlsx"
+    INPUT_EXCEL_FILE = "C:\\Users\\emily\\Downloads\\Chia-cont-testing (1) (1) (1).xlsx"
     
     # 2. Tên Sheet muốn xử lý (giữ nguyên)
-    SHEET_NAME = "09 Jun"
+    SHEET_NAME = "18.08"
 
     # 3. Tên hai công ty (giữ nguyên)
     COMPANY_1_NAME = "1.0"

@@ -290,23 +290,32 @@ def _collect_items_for_rebalancing(df_container):
     return pallets_to_keep, items_to_rebalance
 
 
-def _process_waiting_queue(waiting_queue_items):
+def _process_waiting_queue(waiting_queue_items, kept_pallet_count):
     """
     Xử lý hàng đợi các pallet con, ghép chúng lại thành các pallet mới
-    theo quy tắc lấp đầy <= 90%. Sử dụng thuật toán tham lam (greedy).
+    theo quy tắc lấp đầy <= 90% VÀ đảm bảo tổng số pallet logic không vượt quá 20.
 
     Args:
-        waiting_queue_items (list): Danh sách các pallet con (dạng dict) đã được sắp xếp.
+        waiting_queue_items (list): Danh sách các pallet con cần xử lý.
+        kept_pallet_count (int): Số lượng pallet tối ưu đã được giữ lại.
 
     Returns:
-        list: Danh sách các pallet mới đã được ghép. Mỗi pallet mới là một list các pallet con.
+        list: Danh sách các pallet mới đã được ghép.
     """
     if not waiting_queue_items:
         return []
 
-    rebalanced_pallets = []
+    # Hằng số giới hạn tổng số pallet logic trong một container
+    MAX_LOGICAL_PALLETS = 20
     
-    while waiting_queue_items:
+    # Số pallet mới có thể tạo ra từ hàng chờ
+    available_slots = MAX_LOGICAL_PALLETS - kept_pallet_count
+    
+    rebalanced_pallets = []
+
+    # Chỉ tạo các pallet mới nếu còn "suất"
+    # Dành lại 1 suất cuối cùng để gộp tất cả phần còn lại nếu cần
+    while waiting_queue_items and len(rebalanced_pallets) < available_slots - 1:
         current_pallet_group = [waiting_queue_items.pop(0)]
         max_box_pallet_in_group = _safe_float(current_pallet_group[0].get('Box/Pallet', 0))
         
@@ -326,8 +335,17 @@ def _process_waiting_queue(waiting_queue_items):
                 i += 1 
 
         rebalanced_pallets.append(current_pallet_group)
+
+    # Nếu vẫn còn các item trong hàng chờ sau khi đã hết suất tối ưu,
+    # gộp tất cả chúng vào một pallet cuối cùng.
+    if waiting_queue_items:
+        final_group = waiting_queue_items[:]  # Lấy tất cả các item còn lại
+        rebalanced_pallets.append(final_group)
+        waiting_queue_items.clear()
         
-    print(f"[HÀNG CHỜ] Đã xử lý xong, tạo ra {len(rebalanced_pallets)} pallet mới đã cân bằng.")
+    print(f"[HÀNG CHỜ] Đã xử lý xong, tạo ra {len(rebalanced_pallets)} pallet mới. "
+          f"Tổng số pallet sau cùng: {kept_pallet_count + len(rebalanced_pallets)}")
+          
     return rebalanced_pallets
 
 def write_packing_list_to_sheet(ws, data_df, container_id_num,cumulative_pallet_count,cumulative_pcs, cumulative_nw, cumulative_gw):
@@ -769,7 +787,7 @@ def generate_packing_list_endpoint():
             df_draft_pkl = pd.DataFrame(draft_rows)
             
             kept_pallets, waiting_queue_items = _collect_items_for_rebalancing(df_draft_pkl.copy())
-            rebalanced_pallets = _process_waiting_queue(waiting_queue_items)
+            rebalanced_pallets = _process_waiting_queue(waiting_queue_items, len(kept_pallets))
             final_df = _generate_final_pkl_dataframe(kept_pallets, rebalanced_pallets, final_pkl_counter)
             
             if not final_df.empty:
@@ -780,9 +798,11 @@ def generate_packing_list_endpoint():
         wb = Workbook()
         wb.remove(wb.active) # Xóa sheet mặc định
 
+        # Sắp xếp các container theo ID để đảm bảo thứ tự xử lý nhất quán
         sorted_container_ids = sorted(finalized_dfs.keys(), key=lambda x: int(re.search(r'\d+', x).group()))
 
-        # **PHẦN LOGIC TÍNH TOÁN DỒN MỚI**
+        # **PHẦN LOGIC TÍNH TOÁN DỒN MỚI (TWO-PASS APPROACH)**
+        
         # PASS 1: TÍNH TOÁN VÀ LƯU TRỮ TRƯỚC TẤT CẢ CÁC GIÁ TRỊ TỔNG DỒN
         # Logic được viết lại để đơn giản, chính xác và loại bỏ lỗi đếm sai.
         case_mark_data_map = {}
@@ -795,7 +815,8 @@ def generate_packing_list_endpoint():
         for container_id in sorted_container_ids:
             df = finalized_dfs[container_id]
             
-            # SỬA LỖI: Chỉ đếm các pallet có tên (không phải chuỗi rỗng)
+            # SỬA LỖI: Chỉ đếm các pallet có tên (không phải chuỗi rỗng) để có số lượng chính xác.
+            # df['Pallet'] != '' sẽ lọc ra các dòng con trong một pallet ghép.
             current_pallet_count = df.loc[df['Pallet'] != '', 'Pallet'].nunique()
 
             # Cập nhật các giá trị tổng dồn
@@ -804,7 +825,7 @@ def generate_packing_list_endpoint():
             cumulative_nw += df['N.W (kgs)'].sum()
             cumulative_gw += df['G.W (kgs)'].sum()
             
-            # Lưu trữ kết quả tính dồn cho container này
+            # Lưu trữ kết quả tính dồn cho container này vào map
             case_mark_data_map[container_id] = {
                 'cumulative_pallet_count': cumulative_pallet_count,
                 'cumulative_pcs': cumulative_pcs,
@@ -818,10 +839,10 @@ def generate_packing_list_endpoint():
             container_id_num = ''.join(filter(str.isdigit, container_id))
             ws = wb.create_sheet(title=f"PKL_Cont_{container_id_num}")
 
-            # Lấy dữ liệu tổng dồn đã được tính toán cho container hiện tại
+            # Lấy dữ liệu tổng dồn đã được tính toán chính xác cho container hiện tại từ map
             current_case_mark_data = case_mark_data_map[container_id]
 
-            # Gọi hàm ghi vào sheet với dữ liệu chính xác
+            # Gọi hàm ghi vào sheet với dữ liệu tổng dồn chính xác
             write_packing_list_to_sheet(
                 ws, 
                 df_for_pkl, 
