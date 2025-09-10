@@ -188,7 +188,7 @@ if __name__ == '__main__':
     # !!! QUAN TRỌNG: THAY ĐỔI CÁC GIÁ TRỊ DƯỚI ĐÂY !!!
     
     # 1. Đường dẫn file Excel dữ liệu thô (giữ nguyên)
-    INPUT_EXCEL_FILE = "C:\\Users\\emily\\Downloads\\Chia-cont-testing (1) (1) (1).xlsx"
+    INPUT_EXCEL_FILE = "Chia-cont-testing (1) (1) (1).xlsx"
     
     # 2. Tên Sheet muốn xử lý (giữ nguyên)
     SHEET_NAME = "18.08"
