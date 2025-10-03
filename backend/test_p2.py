@@ -1,4 +1,4 @@
-from data_pro_test import *
+from data_processor import *
 import pandas as pd
 import math
 import re
@@ -64,8 +64,8 @@ def print_container_status(containers, step_name, integer_wait_list=None, fracti
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia-cont-testing (1) (1) (1).xlsx    Chia-cont-2025-filled-data-1.xlsx
-    file_path = "C:\\Users\\admin\\Downloads\\Chia-cont-2025-filled-data-1.xlsx"
-    sheet_name = "TEST"
+    file_path = "C:\\Users\\admin\\Downloads\\Chia cont - 2025(AutoRecovered).xlsx"
+    sheet_name = "Nov"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
     
@@ -217,10 +217,32 @@ if __name__ == "__main__":
                 for p in unplaced_fractional_pallets: print(f"  - {p}")
                 break  # Thoát khỏi vòng lặp while
 
-        # --- BƯỚC 7 (MỚI): KẾT QUẢ PHÂN BỔ CUỐI CÙNG ---
+        #####################         GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (MỚI)         #########################
+        print("\n" + "="*80)
+        print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG")
+        print("="*80)
+
+        # Tải dữ liệu thô cần thiết cho Giai đoạn 4.
+        # Dù logic mới không dùng đến, việc này đảm bảo tính tương thích.
+        raw_data_map, raw_data_error = load_and_map_raw_data_for_pkl(file_path, sheet_name)
+        
+        if raw_data_error:
+            print(f"!!! CẢNH BÁO: Không thể tải dữ liệu thô. Giai đoạn 4 có thể không chính xác. Lỗi: {raw_data_error}")
+            fully_optimized_containers = phase_4_final_consolidation(
+                final_containers,
+                {}
+            )
+        else:
+            # Chạy Giai đoạn 4 với hàm logic đã được cập nhật
+            fully_optimized_containers = phase_4_final_consolidation(
+                final_containers,
+                raw_data_map
+            )
+
+        # --- BƯỚC 7 (MỚI): KẾT QUẢ PHÂN BỔ CUỐI CÙNG (SAU GIAI ĐOẠN 4) ---
         print("\n# BƯỚC 7 (MỚI): KẾT QUẢ PHÂN BỔ CUỐI CÙNG #")
         print_container_status(
-            containers=final_containers,
+            containers=fully_optimized_containers, # <-- SỬ DỤNG KẾT QUẢ SAU TỐI ƯU
             step_name="HOÀN TẤT",
             integer_wait_list=unplaced_integer_pallets,
             fractional_wait_list=unplaced_fractional_pallets
