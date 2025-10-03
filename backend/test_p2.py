@@ -65,7 +65,7 @@ def print_container_status(containers, step_name, integer_wait_list=None, fracti
 if __name__ == "__main__":
     # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia-cont-testing (1) (1) (1).xlsx    Chia-cont-2025-filled-data-1.xlsx
     file_path = "C:\\Users\\admin\\Downloads\\Chia cont - 2025(AutoRecovered).xlsx"
-    sheet_name = "Nov"
+    sheet_name = "13Oct"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
     
@@ -217,30 +217,19 @@ if __name__ == "__main__":
                 for p in unplaced_fractional_pallets: print(f"  - {p}")
                 break  # Thoát khỏi vòng lặp while
 
-        #####################         GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (MỚI)         #########################
+        #####################         GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG         #########################
         print("\n" + "="*80)
-        print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG")
+        print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (v4 - Tích hợp chia tách)")
         print("="*80)
 
-        # Tải dữ liệu thô cần thiết cho Giai đoạn 4.
-        # Dù logic mới không dùng đến, việc này đảm bảo tính tương thích.
-        raw_data_map, raw_data_error = load_and_map_raw_data_for_pkl(file_path, sheet_name)
-        
-        if raw_data_error:
-            print(f"!!! CẢNH BÁO: Không thể tải dữ liệu thô. Giai đoạn 4 có thể không chính xác. Lỗi: {raw_data_error}")
-            fully_optimized_containers = phase_4_final_consolidation(
-                final_containers,
-                {}
-            )
-        else:
-            # Chạy Giai đoạn 4 với hàm logic đã được cập nhật
-            fully_optimized_containers = phase_4_final_consolidation(
-                final_containers,
-                raw_data_map
-            )
+        # Với logic mới, không cần tải lại raw_data_map ở bước này nữa.
+        # Chạy Giai đoạn 4 với hàm logic đã được cập nhật, chỉ cần truyền vào danh sách container.
+        fully_optimized_containers = phase_4_final_consolidation(
+            final_containers
+        )
 
-        # --- BƯỚC 7 (MỚI): KẾT QUẢ PHÂN BỔ CUỐI CÙNG (SAU GIAI ĐOẠN 4) ---
-        print("\n# BƯỚC 7 (MỚI): KẾT QUẢ PHÂN BỔ CUỐI CÙNG #")
+        # --- BƯỚC 7: KẾT QUẢ PHÂN BỔ CUỐI CÙNG (SAU GIAI ĐOẠN 4) ---
+        print("\n# BƯỚC 7: KẾT QUẢ PHÂN BỔ CUỐI CÙNG #")
         print_container_status(
             containers=fully_optimized_containers, # <-- SỬ DỤNG KẾT QUẢ SAU TỐI ƯU
             step_name="HOÀN TẤT",
