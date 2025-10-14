@@ -64,8 +64,8 @@ def print_container_status(containers, step_name, integer_wait_list=None, fracti
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia-cont-testing (1) (1) (1).xlsx    Chia-cont-2025-filled-data-1.xlsx
-    file_path = "C:\\Users\\admin\\Downloads\\Chia cont - 2025(AutoRecovered).xlsx"
-    sheet_name = "13Oct"
+    file_path = "C:\\Users\\admin\Documents\\Chia cont - 2025(AutoRecovered).xlsx"
+    sheet_name = "Nov"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
     
@@ -110,19 +110,35 @@ if __name__ == "__main__":
             integer_wait_list=unplaced_integer_pallets
         )
 
-        # --- BƯỚC 5: GỘP VÀ XẾP PALLET LẺ (KHÔNG ĐỔI) ---
-        print("\n# BƯỚC 5: GỘP VÀ XẾP PALLET LẺ #")
-        print(f"==> Tổng số pallet lẻ cần xử lý: {len(fractional_pallets)}")
-        combined_pallets, uncombined_pallets = combine_fractional_pallets(fractional_pallets)
-        pallets_to_pack_fractional = combined_pallets + uncombined_pallets
+        # --- BƯỚC 5: GỘP PALLET LẺ CÙNG CÔNG TY (LOGIC GỐC) ---
+        print("\n# BƯỚC 5: GỘP PALLET LẺ CÙNG CÔNG TY #")
+        print(f"==> Tổng số pallet lẻ cần xử lý ban đầu: {len(fractional_pallets)}")
+        combined_pallets_same_company, uncombined_pallets = combine_fractional_pallets(fractional_pallets)
+        
+        # Lấy ID lớn nhất từ các pallet đã gộp để bắt đầu bộ đếm mới
+        last_combined_id = 0
+        if combined_pallets_same_company:
+            last_combined_id = max([int(re.search(r'\d+', p.id).group()) for p in combined_pallets_same_company])
+        next_id_for_mixed = last_combined_id + 1
+
+
+        # --- BƯỚC 5.5 (LOGIC MỚI): TỐI ƯU HÓA GHÉP LIÊN CÔNG TY ---
+        newly_combined_mixed, remaining_fractionals, next_id_for_mixed = optimize_cross_company_combination(
+            combined_pallets_same_company, uncombined_pallets, next_id_for_mixed
+        )
+
+        # Gộp tất cả các pallet lẻ/gộp lại để chuẩn bị xếp
+        pallets_to_pack_fractional = newly_combined_mixed + remaining_fractionals
+        
+        # Xếp các pallet fractional đã tối ưu vào container
         unplaced_fractional_pallets = pack_fractional_pallets(pallets_to_pack_fractional, final_containers)
+
         print_container_status(
             containers=final_containers,
-            step_name="BƯỚC 5: XẾP PALLET LẺ/GỘP LẦN ĐẦU",
+            step_name="BƯỚC 5.5: SAU KHI TỐI ƯU LIÊN CÔNG TY VÀ XẾP LẦN ĐẦU",
             integer_wait_list=unplaced_integer_pallets,
             fractional_wait_list=unplaced_fractional_pallets
         )
-
         # --- BƯỚC 6 (MỚI): VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ ---
         print("\n# BƯỚC 6 (MỚI): VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ #")
         loop_counter = 0
@@ -216,7 +232,28 @@ if __name__ == "__main__":
                 for p in unplaced_integer_pallets: print(f"  - {p}")
                 for p in unplaced_fractional_pallets: print(f"  - {p}")
                 break  # Thoát khỏi vòng lặp while
-
+            
+                        # === 6.4 (LOGIC MỚI): XỬ LÝ PALLET HỖN HỢP CÒN SÓT LẠI VÀO CUỐI VÒNG LẶP ===
+            mixed_pallets_to_place = [p for p in unplaced_fractional_pallets if "+" in str(p.company)]
+            
+            if mixed_pallets_to_place:
+                print(f"-> CUỐI VÒNG LẶP: Xử lý {len(mixed_pallets_to_place)} pallet hỗn hợp (liên công ty)...")
+                
+                # Tạo một bản sao để lặp qua, vì chúng ta sẽ xóa phần tử khỏi danh sách gốc
+                for mixed_pallet in list(mixed_pallets_to_place):
+                    placed = False
+                    # Sắp xếp TẤT CẢ các container để tìm chỗ trống tốt nhất, không phân biệt công ty
+                    for container in sorted(final_containers, key=lambda c: c.remaining_quantity):
+                        if container.can_fit(mixed_pallet):
+                            container.add_pallet(mixed_pallet)
+                            print(f"  [+] (Xếp hỗn hợp) Đã xếp pallet hỗn hợp {mixed_pallet.id} vào container {container.id}")
+                            placed = True
+                            # Xóa pallet đã được xếp khỏi danh sách chờ gốc
+                            unplaced_fractional_pallets = [p for p in unplaced_fractional_pallets if p.id != mixed_pallet.id]
+                            break # Chuyển sang pallet hỗn hợp tiếp theo
+                    
+                    if not placed:
+                         print(f"  [-] (Chưa xếp được) Pallet hỗn hợp {mixed_pallet.id} vẫn trong danh sách chờ.")
         #####################         GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG         #########################
         print("\n" + "="*80)
         print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (v4 - Tích hợp chia tách)")

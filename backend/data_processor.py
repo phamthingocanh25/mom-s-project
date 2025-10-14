@@ -2225,3 +2225,83 @@ def phase_4_final_consolidation(containers):
     print(f"Số container cuối cùng: {len(containers)}")
     print("="*80)
     return containers
+
+def optimize_cross_company_combination(combined_pallets, uncombined_pallets, next_combined_id_start):
+    """
+    Giai đoạn tối ưu hóa NÂNG CAO: Thử ghép các pallet lẻ hoặc đã ghép
+    với nhau, cho phép ghép cả pallet khác công ty, để đạt gần ngưỡng 0.9 nhất có thể.
+
+    Args:
+        combined_pallets (list[Pallet]): Danh sách pallet đã được ghép trong cùng công ty.
+        uncombined_pallets (list[Pallet]): Danh sách pallet lẻ không ghép được.
+        next_combined_id_start (int): ID bắt đầu cho các pallet gộp mới.
+
+    Returns:
+        tuple: (danh_sách_pallet_gộp_cuối_cùng, danh_sách_pallet_lẻ_còn_lại, id_gộp_tiếp_theo)
+    """
+    print("\n--- BẮT ĐẦU TỐI ƯU HÓA GHÉP LIÊN CÔNG TY (NGƯỠNG 0.9) ---")
+
+    all_fractionals = combined_pallets + uncombined_pallets
+    if not all_fractionals:
+        print("   -> Không có pallet lẻ/gộp nào để tối ưu hóa.")
+        return [], [], next_combined_id_start
+
+    available_pallets = sorted(all_fractionals, key=lambda p: p.quantity, reverse=True)
+    
+    newly_combined_pallets = []
+    final_uncombined_pallets = []
+    
+    while available_pallets:
+        base_pallet = available_pallets.pop(0)
+        current_sub_pallets = list(base_pallet.original_pallets)
+
+        candidates = sorted(available_pallets, key=lambda p: p.quantity, reverse=True)
+        
+        for candidate in list(candidates):
+            if candidate not in available_pallets:
+                continue
+
+            candidate_sub_pallets = candidate.original_pallets
+            potential_combination = current_sub_pallets + candidate_sub_pallets
+            
+            potential_quantity = sum(p.quantity for p in potential_combination)
+            if potential_quantity > 0.9 + EPSILON:
+                continue
+
+            num_large_pallets = sum(1 for p in potential_combination if p.quantity >= 0.5)
+            if num_large_pallets > 1:
+                continue
+            
+            print(f"  [+] Ghép nối thành công: Pallet '{base_pallet.id}' và '{candidate.id}'")
+            current_sub_pallets.extend(candidate_sub_pallets)
+            available_pallets.remove(candidate)
+
+        if len(current_sub_pallets) > len(base_pallet.original_pallets):
+            total_qty = sum(p.quantity for p in current_sub_pallets)
+            total_wgt = sum(p.total_weight for p in current_sub_pallets)
+            
+            all_companies = sorted(list(set(p.company for p in current_sub_pallets)))
+            new_company = "+".join(all_companies) if len(all_companies) > 1 else all_companies[0]
+            
+            combined_pallet = Pallet(
+                p_id=f"COMBINED-{next_combined_id_start}",
+                product_code="MIXED",
+                product_name=f"MIXED-COMPANY ({len(current_sub_pallets)} items)",
+                company=new_company,
+                quantity=total_qty,
+                weight_per_pallet=total_wgt / total_qty if total_qty > 0 else 0,
+                box_per_pallet=sum(p.box_per_pallet for p in current_sub_pallets if p.box_per_pallet is not None)
+            )
+            combined_pallet.is_combined = True
+            combined_pallet.original_pallets = current_sub_pallets
+            combined_pallet._recalculate_from_originals() # Tính toán lại để cập nhật thông tin
+            newly_combined_pallets.append(combined_pallet)
+            next_combined_id_start += 1
+            print(f"    -> Đã tạo pallet gộp mới: {combined_pallet}")
+        else:
+            final_uncombined_pallets.append(base_pallet)
+
+    print(f"--- KẾT THÚC TỐI ƯU HÓA LIÊN CÔNG TY ---")
+    
+    # Trả về các pallet mới được gộp và các pallet còn lại không thể gộp thêm
+    return newly_combined_pallets, final_uncombined_pallets, next_combined_id_start

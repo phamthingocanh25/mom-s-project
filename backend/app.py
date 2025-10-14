@@ -555,9 +555,20 @@ def process_data():
             container_id_counter
         )
 
-        # BƯỚC 5: GỘP VÀ XẾP PALLET LẺ
-        combined_pallets, uncombined_pallets = combine_fractional_pallets(fractional_pallets)
-        pallets_to_pack_fractional = combined_pallets + uncombined_pallets
+        # BƯỚC 5: GỘP PALLET LẺ CÙNG CÔNG TY
+        combined_pallets_same_company, uncombined_pallets = combine_fractional_pallets(fractional_pallets)
+        
+        last_combined_id = 0
+        if combined_pallets_same_company:
+            last_combined_id = max([int(re.search(r'\d+', p.id).group()) for p in combined_pallets_same_company])
+        next_id_for_mixed = last_combined_id + 1
+
+        # BƯỚC 5.5: TỐI ƯU HÓA GHÉP LIÊN CÔNG TY
+        newly_combined_mixed, remaining_fractionals, next_id_for_mixed = optimize_cross_company_combination(
+            combined_pallets_same_company, uncombined_pallets, next_id_for_mixed
+        )
+        
+        pallets_to_pack_fractional = newly_combined_mixed + remaining_fractionals
         unplaced_fractional_pallets = pack_fractional_pallets(pallets_to_pack_fractional, final_containers)
 
         # BƯỚC 6: VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ
@@ -608,7 +619,6 @@ def process_data():
             pallets_after_iteration = len(unplaced_integer_pallets) + len(unplaced_fractional_pallets)
             if pallets_after_iteration > 0 and pallets_after_iteration == pallets_before_iteration:
                 print("Warning: No progress in packing loop. Breaking to avoid infinite loop.")
-                # Thêm log về các pallet còn lại để debug
                 if unplaced_integer_pallets:
                     print("Unplaced integer pallets:")
                     for p in unplaced_integer_pallets: print(f"  - {p}")
@@ -616,27 +626,36 @@ def process_data():
                     print("Unplaced fractional pallets:")
                     for p in unplaced_fractional_pallets: print(f"  - {p}")
                 break
+            
+            # 6.4: XỬ LÝ PALLET HỖN HỢP CÒN SÓT LẠI VÀO CUỐI VÒNG LẶP
+            mixed_pallets_to_place = [p for p in unplaced_fractional_pallets if "+" in str(p.company)]
+            if mixed_pallets_to_place:
+                for mixed_pallet in list(mixed_pallets_to_place):
+                    placed = False
+                    for container in sorted(final_containers, key=lambda c: c.remaining_quantity):
+                        if container.can_fit(mixed_pallet):
+                            container.add_pallet(mixed_pallet)
+                            placed = True
+                            unplaced_fractional_pallets = [p for p in unplaced_fractional_pallets if p.id != mixed_pallet.id]
+                            break
+                    if not placed:
+                        print(f"  [-] (Chưa xếp được) Pallet hỗn hợp {mixed_pallet.id} vẫn trong danh sách chờ.")
 
-        # --- GIAI ĐOẠN 3 (MỚI): TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (PHASE 4) ---
+
+        # --- GIAI ĐOẠN 3: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (PHASE 4) ---
         fully_optimized_containers = phase_4_final_consolidation(final_containers)
 
         # --- GIAI ĐOẠN 4: HOÀN THIỆN VÀ TRẢ KẾT QUẢ ---
-        # Sắp xếp container theo ID số để đảm bảo thứ tự
         fully_optimized_containers.sort(key=lambda c: int(re.search(r'\d+', c.id).group()))
-        # Đánh lại ID cho tuần tự
         for i, container in enumerate(fully_optimized_containers, 1):
             container.id = f"Cont_{i}"
 
-        # Chuyển đổi kết quả sang JSON và trả về
         response_dict = _generate_response_from_containers(fully_optimized_containers)
-
         final_response = {
             "success": response_dict.get("success", True),
             "results": response_dict.get("data", [])
         }
         
-        # Thêm thông tin về các pallet chưa được xếp (nếu có) vào response
-        # để frontend có thể hiển thị cảnh báo
         unplaced_info = []
         for p in (unplaced_integer_pallets or []):
             unplaced_info.append(f"Pallet nguyên: {p.id} ({p.quantity} qty, {p.total_weight} wgt)")
