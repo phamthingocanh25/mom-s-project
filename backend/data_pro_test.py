@@ -2069,3 +2069,239 @@ def cross_ship_remaining_pallets(unplaced_pallets, containers, next_container_id
         # Trả về phần còn lại của danh sách chờ và ID container đã cập nhật
         print(f"   -> {len(sorted_pallets)} pallet còn lại sẽ chờ vòng lặp lớn tiếp theo.")
         return sorted_pallets, next_container_id
+    
+
+def phase_4_final_consolidation(containers):
+    """
+    Giai đoạn 4: Tối ưu hóa hợp nhất cuối cùng (LOGIC v4.3 - Sửa lỗi giới hạn cứng).
+
+    Cải tiến: Loại bỏ hoàn toàn sự phụ thuộc vào các phương thức .can_fit() và
+    .remaining_weight của class Container. Thay vào đó, hàm sẽ tự thực hiện
+    tất cả các phép kiểm tra điều kiện một cách tường minh bằng cách sử dụng
+    giới hạn trọng lượng linh hoạt (MAX_WEIGHT_FLEXIBLE = 24500kg).
+    """
+    print("\n" + "="*80)
+    print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT (v4.3 - Sửa lỗi giới hạn cứng)")
+    print("="*80)
+
+    # --- Các hằng số cục bộ ---
+    MAX_PALLETS_STRICT = 20.0
+    MAX_WEIGHT_FLEXIBLE = 24500.0
+    EPSILON = 1e-6
+
+    # --- Hàm trợ giúp được viết lại hoàn toàn để tự kiểm tra điều kiện ---
+    def _place_pallet_iteratively_flexible(pallet_to_place, target_containers, placement_type=""):
+        if not pallet_to_place or pallet_to_place.quantity < EPSILON:
+            return True
+        remaining_part = pallet_to_place
+        sorted_containers = sorted(target_containers, key=lambda c: c.total_quantity, reverse=True) # Ưu tiên lấp đầy cont gần đầy
+        is_integer_logic = abs(pallet_to_place.quantity - round(pallet_to_place.quantity)) < EPSILON
+
+        for container in sorted_containers:
+            if remaining_part is None or remaining_part.quantity < EPSILON:
+                break
+
+            # === ĐIỂM SỬA LỖI TRỌNG TÂM: TÍNH TOÁN THỦ CÔNG ===
+            # Bỏ qua .remaining_weight và .remaining_quantity, tự tính toán
+            rem_qty = MAX_PALLETS_STRICT - container.total_quantity
+            rem_wgt = MAX_WEIGHT_FLEXIBLE - container.total_weight
+            rem_lp = MAX_PALLETS_STRICT - container.total_logical_pallets
+
+            if rem_qty < EPSILON or rem_wgt < EPSILON or rem_lp < 1:
+                continue
+
+            # Tính toán lượng có thể xếp dựa trên các giới hạn tự tính
+            qty_by_vol = rem_qty
+            qty_by_wgt = rem_wgt / remaining_part.weight_per_pallet if remaining_part.weight_per_pallet > 0 else float('inf')
+            max_fit_quantity = min(remaining_part.quantity, qty_by_vol, qty_by_wgt)
+
+            fit_quantity = math.floor(max_fit_quantity) if is_integer_logic else max_fit_quantity
+
+            if (is_integer_logic and fit_quantity < 1.0 - EPSILON) or (not is_integer_logic and fit_quantity < EPSILON):
+                continue
+
+            if abs(remaining_part.quantity - fit_quantity) < EPSILON:
+                # Kiểm tra thủ công thay vì dùng container.can_fit()
+                check_lp = container.total_logical_pallets + remaining_part.logical_pallet_count <= MAX_PALLETS_STRICT
+                if check_lp:
+                    container.add_pallet(remaining_part)
+                    print(f"       -> ({placement_type}) Đã xếp (toàn bộ) {remaining_part.id} vào container {container.id}")
+                    remaining_part = None
+                continue
+            else:
+                if fit_quantity > EPSILON:
+                    rest, piece_to_add = remaining_part.split(fit_quantity)
+                    # Kiểm tra thủ công thay vì dùng container.can_fit()
+                    check_lp_split = container.total_logical_pallets + piece_to_add.logical_pallet_count <= MAX_PALLETS_STRICT
+                    if check_lp_split:
+                        container.add_pallet(piece_to_add)
+                        print(f"       -> ({placement_type}) Đã xếp (một phần) {piece_to_add.id} (qty: {piece_to_add.quantity:.2f}) vào cont {container.id}")
+                        remaining_part = rest
+
+        return remaining_part is None or remaining_part.quantity < EPSILON
+
+    # --- Vòng lặp tối ưu hóa chính (Giữ nguyên logic tổng thể) ---
+    while True:
+        if len(containers) <= 1:
+            print("\nChỉ còn 1 container hoặc không còn, dừng hợp nhất.")
+            break
+
+        containers.sort(key=lambda c: (c.total_quantity, c.total_logical_pallets, c.total_weight))
+        target_container = containers[0]
+        other_containers = containers[1:]
+
+        print(f"\n--- Bắt đầu lượt hợp nhất mới. MỤC TIÊU: Container {target_container.id} (QTY: {target_container.total_quantity:.2f}) ---")
+
+        # --- BƯỚC 1: KIỂM TRA SƠ BỘ ---
+        target_load = {'qty': target_container.total_quantity, 'lp': target_container.total_logical_pallets}
+        remaining_capacity = {
+            'qty': sum(MAX_PALLETS_STRICT - c.total_quantity for c in other_containers),
+            'lp': sum(MAX_PALLETS_STRICT - c.total_logical_pallets for c in other_containers)
+        }
+        if not (remaining_capacity['qty'] >= target_load['qty'] and remaining_capacity['lp'] >= target_load['lp']):
+            print(f" -> KIỂM TRA THẤT BẠI: Tổng sức chứa còn lại không đủ. Dừng quá trình hợp nhất.")
+            break
+        print(" -> KIỂM TRA THÀNH CÔNG: Sức chứa về lý thuyết là đủ. Bắt đầu tìm kế hoạch.")
+
+        # --- BƯỚC 2: KẾ HOẠCH A - HỢP NHẤT NGUYÊN VẸN (ĐÃ IMPLEMENT) ---
+        print(f"\n   [KẾ HOẠCH A] Thử hợp nhất NGUYÊN VẸN pallet từ {target_container.id}...")
+        temp_other_containers_A = copy.deepcopy(other_containers)
+        plan_A_successful = True
+        
+        # Sắp xếp pallet cần di chuyển (ưu tiên pallet lớn trước) để tăng khả năng thành công
+        pallets_to_move_whole = sorted(target_container.pallets, key=lambda p: p.logical_pallet_count, reverse=True)
+
+        for pallet in pallets_to_move_whole:
+            placed = False
+            # Sắp xếp các container đích để ưu tiên lấp đầy những cont đã gần đầy
+            for temp_cont in sorted(temp_other_containers_A, key=lambda c: c.total_quantity, reverse=True):
+                # Kiểm tra thủ công xem pallet NGUYÊN VẸN có vừa không
+                can_fit_qty = (temp_cont.total_quantity + pallet.quantity) <= MAX_PALLETS_STRICT + EPSILON
+                can_fit_wgt = (temp_cont.total_weight + pallet.total_weight) <= MAX_WEIGHT_FLEXIBLE + EPSILON
+                can_fit_lp = (temp_cont.total_logical_pallets + pallet.logical_pallet_count) <= MAX_PALLETS_STRICT + EPSILON
+                
+                if can_fit_qty and can_fit_wgt and can_fit_lp:
+                    temp_cont.add_pallet(pallet)
+                    print(f"       -> (Kế hoạch A) Dự tính xếp {pallet.id} vào container {temp_cont.id}")
+                    placed = True
+                    break # Pallet đã được xếp, chuyển sang pallet tiếp theo
+
+            if not placed:
+                plan_A_successful = False
+                print(f"   -> THẤT BẠI (Kế hoạch A): Không tìm được chỗ cho pallet NGUYÊN VẸN {pallet.id}.")
+                break # Dừng Kế hoạch A ngay lập tức
+
+        if plan_A_successful:
+            print(f"   -> THÀNH CÔNG (Kế hoạch A). Thực thi hợp nhất.")
+            containers = temp_other_containers_A
+            print(f"   >>> Đã hợp nhất thành công và loại bỏ container {target_container.id}. Tiếp tục vòng lặp...")
+            continue # Quay lại đầu vòng lặp while với danh sách container đã được rút gọn
+
+        # --- BƯỚC 3: KẾ HOẠCH B - CHIA TÁCH THÔNG MINH ---
+        # Chỉ chạy nếu Kế hoạch A thất bại
+        print(f"\n   [KẾ HOẠCH B] Kế hoạch A thất bại. Thử CHIA TÁCH THÔNG MINH pallet từ {target_container.id}...")
+        pallets_to_move_split = list(target_container.pallets)
+        temp_other_containers_B = copy.deepcopy(other_containers)
+        
+        all_pallets_placed = True
+        for pallet in pallets_to_move_split:
+            was_placed = _place_pallet_iteratively_flexible(pallet, temp_other_containers_B, "Hợp nhất")
+            if not was_placed:
+                all_pallets_placed = False
+                print(f"   -> THẤT BẠI (Kế hoạch B): Không thể xếp vừa tất cả các mảnh của pallet {pallet.id}.")
+                break
+        
+        if all_pallets_placed:
+            print(f"   -> THÀNH CÔNG (Kế hoạch B). Thực thi hợp nhất.")
+            containers = temp_other_containers_B
+            print(f"   >>> Đã hợp nhất thành công và loại bỏ container {target_container.id}. Tiếp tục vòng lặp...")
+            continue
+        else:
+            print(f"\n -> Đã thử cả hai kế hoạch nhưng không thể hợp nhất {target_container.id}. Quá trình tối ưu kết thúc.")
+            break # Thoát khỏi vòng lặp while vì không thể dồn container mục tiêu
+
+    print("\n" + "="*80)
+    print("KẾT THÚC GIAI ĐOẠN 4")
+    print(f"Số container cuối cùng: {len(containers)}")
+    print("="*80)
+    return containers
+
+def optimize_cross_company_combination(combined_pallets, uncombined_pallets, next_combined_id_start):
+    """
+    Giai đoạn tối ưu hóa NÂNG CAO: Thử ghép các pallet lẻ hoặc đã ghép
+    với nhau, cho phép ghép cả pallet khác công ty, để đạt gần ngưỡng 0.9 nhất có thể.
+
+    Args:
+        combined_pallets (list[Pallet]): Danh sách pallet đã được ghép trong cùng công ty.
+        uncombined_pallets (list[Pallet]): Danh sách pallet lẻ không ghép được.
+        next_combined_id_start (int): ID bắt đầu cho các pallet gộp mới.
+
+    Returns:
+        tuple: (danh_sách_pallet_gộp_cuối_cùng, danh_sách_pallet_lẻ_còn_lại, id_gộp_tiếp_theo)
+    """
+    print("\n--- BẮT ĐẦU TỐI ƯU HÓA GHÉP LIÊN CÔNG TY (NGƯỠNG 0.9) ---")
+
+    all_fractionals = combined_pallets + uncombined_pallets
+    if not all_fractionals:
+        print("   -> Không có pallet lẻ/gộp nào để tối ưu hóa.")
+        return [], [], next_combined_id_start
+
+    available_pallets = sorted(all_fractionals, key=lambda p: p.quantity, reverse=True)
+    
+    newly_combined_pallets = []
+    final_uncombined_pallets = []
+    
+    while available_pallets:
+        base_pallet = available_pallets.pop(0)
+        current_sub_pallets = list(base_pallet.original_pallets)
+
+        candidates = sorted(available_pallets, key=lambda p: p.quantity, reverse=True)
+        
+        for candidate in list(candidates):
+            if candidate not in available_pallets:
+                continue
+
+            candidate_sub_pallets = candidate.original_pallets
+            potential_combination = current_sub_pallets + candidate_sub_pallets
+            
+            potential_quantity = sum(p.quantity for p in potential_combination)
+            if potential_quantity > 0.9 + EPSILON:
+                continue
+
+            num_large_pallets = sum(1 for p in potential_combination if p.quantity >= 0.5)
+            if num_large_pallets > 1:
+                continue
+            
+            print(f"  [+] Ghép nối thành công: Pallet '{base_pallet.id}' và '{candidate.id}'")
+            current_sub_pallets.extend(candidate_sub_pallets)
+            available_pallets.remove(candidate)
+
+        if len(current_sub_pallets) > len(base_pallet.original_pallets):
+            total_qty = sum(p.quantity for p in current_sub_pallets)
+            total_wgt = sum(p.total_weight for p in current_sub_pallets)
+            
+            all_companies = sorted(list(set(p.company for p in current_sub_pallets)))
+            new_company = "+".join(all_companies) if len(all_companies) > 1 else all_companies[0]
+            
+            combined_pallet = Pallet(
+                p_id=f"COMBINED-{next_combined_id_start}",
+                product_code="MIXED",
+                product_name=f"MIXED-COMPANY ({len(current_sub_pallets)} items)",
+                company=new_company,
+                quantity=total_qty,
+                weight_per_pallet=total_wgt / total_qty if total_qty > 0 else 0,
+                box_per_pallet=sum(p.box_per_pallet for p in current_sub_pallets if p.box_per_pallet is not None)
+            )
+            combined_pallet.is_combined = True
+            combined_pallet.original_pallets = current_sub_pallets
+            combined_pallet._recalculate_from_originals() # Tính toán lại để cập nhật thông tin
+            newly_combined_pallets.append(combined_pallet)
+            next_combined_id_start += 1
+            print(f"    -> Đã tạo pallet gộp mới: {combined_pallet}")
+        else:
+            final_uncombined_pallets.append(base_pallet)
+
+    print(f"--- KẾT THÚC TỐI ƯU HÓA LIÊN CÔNG TY ---")
+    
+    # Trả về các pallet mới được gộp và các pallet còn lại không thể gộp thêm
+    return newly_combined_pallets, final_uncombined_pallets, next_combined_id_start

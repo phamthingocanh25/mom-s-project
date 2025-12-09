@@ -64,8 +64,8 @@ def print_container_status(containers, step_name, integer_wait_list=None, fracti
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia-cont-testing (1) (1) (1).xlsx    Chia-cont-2025-filled-data-1.xlsx
-    file_path = "C:\\Users\\admin\Documents\\Chia cont - 2025(AutoRecovered).xlsx"
-    sheet_name = "Nov"
+    file_path = "C:\\Users\\admin\\Downloads\\Chia-cont-2025-dec-19.xlsx"
+    sheet_name = "19_Dec"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
     
@@ -254,22 +254,24 @@ if __name__ == "__main__":
                     
                     if not placed:
                          print(f"  [-] (Chưa xếp được) Pallet hỗn hợp {mixed_pallet.id} vẫn trong danh sách chờ.")
-        #####################         GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG         #########################
+ #####################         GIAI ĐOẠN TỐI ƯU: XỬ LÝ CONTAINER LÃNG PHÍ         #########################
         print("\n" + "="*80)
-        print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (v4 - Tích hợp chia tách)")
+        print("BẮT ĐẦU GIAI ĐOẠN TỐI ƯU HÓA: XỬ LÝ CONTAINER LÃNG PHÍ (ITERATIVE SOLVER V3)")
         print("="*80)
 
-        # Với logic mới, không cần tải lại raw_data_map ở bước này nữa.
-        # Chạy Giai đoạn 4 với hàm logic đã được cập nhật, chỉ cần truyền vào danh sách container.
-        fully_optimized_containers = phase_4_final_consolidation(
-            final_containers
-        )
+        # [THAY ĐỔI Ở ĐÂY] ==============================================================================
+        # Bạn chỉ cần gọi đúng hàm này. Nó sẽ tự động chạy các bước sửa lỗi (fix), cân bằng (balance), và nhét hàng (inject).
+        # Lưu ý: Hãy đảm bảo bạn đã dán toàn bộ code Logic V3 tôi gửi ở trên vào file 'data_processor.py'
+        
+        fully_optimized_containers = solve_waste_container_iteratively(final_containers)
+        
+        # ===============================================================================================
 
-        # --- BƯỚC 7: KẾT QUẢ PHÂN BỔ CUỐI CÙNG (SAU GIAI ĐOẠN 4) ---
+        # --- BƯỚC 7: KẾT QUẢ PHÂN BỔ CUỐI CÙNG (SAU GIAI ĐOẠN TỐI ƯU) ---
         print("\n# BƯỚC 7: KẾT QUẢ PHÂN BỔ CUỐI CÙNG #")
         print_container_status(
-            containers=fully_optimized_containers, # <-- SỬ DỤNG KẾT QUẢ SAU TỐI ƯU
-            step_name="HOÀN TẤT",
+            containers=fully_optimized_containers, 
+            step_name="HOÀN TẤT (ĐÃ XỬ LÝ CONTAINER LÃNG PHÍ)",
             integer_wait_list=unplaced_integer_pallets,
             fractional_wait_list=unplaced_fractional_pallets
         )

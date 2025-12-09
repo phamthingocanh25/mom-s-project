@@ -267,6 +267,7 @@ class Container:
         """Xóa một pallet khỏi container và cập nhật lại tổng số."""
         self.pallets = [p for p in self.pallets if p.id != pallet_to_remove.id]
         self._recalculate_totals()
+        
 
     @property
     def remaining_logical_pallets(self):
@@ -2070,162 +2071,592 @@ def cross_ship_remaining_pallets(unplaced_pallets, containers, next_container_id
         print(f"   -> {len(sorted_pallets)} pallet còn lại sẽ chờ vòng lặp lớn tiếp theo.")
         return sorted_pallets, next_container_id
     
+# ==============================================================================
+# HÀM BỔ TRỢ: KIỂM TRA HỢP LỆ & TÍNH TOÁN
+# ==============================================================================
 
-def phase_4_final_consolidation(containers):
+def validate_container_state(container):
+    """Kiểm tra xem container có vi phạm giới hạn không."""
+    is_line_ok = container.total_logical_pallets <= MAX_PALLETS + EPSILON
+    is_weight_ok = container.total_weight <= MAX_WEIGHT + EPSILON
+    return is_line_ok and is_weight_ok
+
+def calculate_max_fit(pallet, container):
     """
-    Giai đoạn 4: Tối ưu hóa hợp nhất cuối cùng (LOGIC v4.3 - Sửa lỗi giới hạn cứng).
-
-    Cải tiến: Loại bỏ hoàn toàn sự phụ thuộc vào các phương thức .can_fit() và
-    .remaining_weight của class Container. Thay vào đó, hàm sẽ tự thực hiện
-    tất cả các phép kiểm tra điều kiện một cách tường minh bằng cách sử dụng
-    giới hạn trọng lượng linh hoạt (MAX_WEIGHT_FLEXIBLE = 24500kg).
+    Tính toán số lượng tối đa của pallet có thể nhét vào container
+    dựa trên cả TRỌNG LƯỢNG và SỐ DÒNG.
     """
-    print("\n" + "="*80)
-    print("BẮT ĐẦU GIAI ĐOẠN 4: TỐI ƯU HÓA HỢP NHẤT (v4.3 - Sửa lỗi giới hạn cứng)")
-    print("="*80)
+    # 1. Giới hạn theo dòng (Lines)
+    # Lưu ý: Với pallet nguyên, 1 qty = 1 dòng. Với pallet lẻ, 1 qty (<=1) = 1 dòng.
+    remaining_lines = MAX_PALLETS - container.total_logical_pallets
+    if remaining_lines <= 0:
+        return 0.0
 
-    # --- Các hằng số cục bộ ---
-    MAX_PALLETS_STRICT = 20.0
-    MAX_WEIGHT_FLEXIBLE = 24500.0
-    EPSILON = 1e-6
+    if pallet.quantity >= 1.0 - EPSILON: # Pallet nguyên
+        max_qty_by_lines = float(remaining_lines)
+    else: # Pallet lẻ
+        max_qty_by_lines = 1.0 # Pallet lẻ luôn chiếm 1 dòng, nếu còn chỗ thì là 1, ko thì 0
 
-    # --- Hàm trợ giúp được viết lại hoàn toàn để tự kiểm tra điều kiện ---
-    def _place_pallet_iteratively_flexible(pallet_to_place, target_containers, placement_type=""):
-        if not pallet_to_place or pallet_to_place.quantity < EPSILON:
+    # 2. Giới hạn theo trọng lượng (Weight)
+    remaining_weight = MAX_WEIGHT - container.total_weight
+    if pallet.weight_per_pallet > EPSILON:
+        max_qty_by_weight = remaining_weight / pallet.weight_per_pallet
+    else:
+        max_qty_by_weight = float('inf')
+
+    # 3. Giới hạn theo số lượng thực tế của pallet
+    actual_fit = min(pallet.quantity, max_qty_by_lines, max_qty_by_weight)
+
+    # 4. Làm tròn xuống cho pallet nguyên để đảm bảo không bị lẻ
+    if pallet.quantity >= 1.0 - EPSILON:
+        actual_fit = math.floor(actual_fit + EPSILON)
+
+    return max(0.0, actual_fit)
+
+# ==============================================================================
+# PHASE 5.1: OVERFLOW FIXER (CỨU HỘ CONTAINER BỊ NỔ)
+# ==============================================================================
+
+def fix_container_overflows(containers):
+    """
+    Duyệt qua tất cả container, nếu cái nào bị quá dòng (>20) hoặc quá cân (>24000),
+    lập tức đẩy bớt hàng sang các container còn trống.
+    
+    LOGIC SỬA ĐỔI:
+    - Nếu là Pallet Nguyên (Qty >= 1): Được phép tách ra các phần NGUYÊN để chuyển (ví dụ 5 -> chuyển 2, giữ 3).
+    - Nếu là Pallet Lẻ/Gộp (Qty < 1 hoặc is_combined): KHÔNG ĐƯỢC TÁCH. Chỉ được chuyển nếu target chứa được TOÀN BỘ.
+    """
+    has_action = False
+    
+    # Tìm các container bị lỗi (Source) và các container còn chỗ (Target)
+    overloaded_conts = [c for c in containers if c.total_logical_pallets > MAX_PALLETS or c.total_weight > MAX_WEIGHT]
+    
+    if not overloaded_conts:
+        return False
+
+    print("   [FIX] >>> Phát hiện Container bị quá tải. Đang tiến hành cân bằng lại...")
+
+    # Sắp xếp target: Ưu tiên thằng nào còn nhiều dòng trống nhất
+    available_targets = [c for c in containers if c not in overloaded_conts]
+    available_targets.sort(key=lambda c: c.remaining_logical_pallets, reverse=True)
+
+    for source in overloaded_conts:
+        # Lấy các pallet ra để chuyển đi. Ưu tiên pallet nhỏ/nhẹ để dễ nhét
+        candidates = sorted(source.pallets, key=lambda p: p.quantity, reverse=True)
+        
+        for p_move in list(candidates): # Dùng list() để copy an toàn khi remove
+            if validate_container_state(source):
+                break # Đã fix xong container này
+
+            # Kiểm tra xem pallet này có phải là pallet nguyên không
+            is_integer_pallet = p_move.quantity >= 1.0 - EPSILON and not p_move.is_combined
+
+            for target in available_targets:
+                # Tính toán xem target nhận được bao nhiêu
+                qty_can_accept = calculate_max_fit(p_move, target)
+                
+                # Nếu không thể nhận chút nào -> Bỏ qua
+                if qty_can_accept < EPSILON:
+                    continue
+
+                # --- LOGIC CHẶT CHẼ: KIỂM TRA ĐIỀU KIỆN TÁCH ---
+                should_move = False
+                should_split = False
+
+                if abs(p_move.quantity - qty_can_accept) < EPSILON:
+                    # Trường hợp 1: Target nhận được TOÀN BỘ pallet (bất kể nguyên hay lẻ)
+                    should_move = True
+                    should_split = False
+                
+                elif is_integer_pallet:
+                    # Trường hợp 2: Pallet Nguyên và Target chỉ nhận được một phần NGUYÊN
+                    # (Hàm calculate_max_fit đã đảm bảo qty_can_accept là số nguyên nếu input là pallet nguyên)
+                    if qty_can_accept >= 1.0 - EPSILON:
+                        should_move = True
+                        should_split = True
+                    else:
+                        # Target còn quá ít chỗ (< 1 pallet), không tách vụn pallet nguyên ra lẻ
+                        should_move = False
+                
+                else:
+                    # Trường hợp 3: Pallet Lẻ/Gộp nhưng Target không chứa hết -> KHÔNG TÁCH
+                    should_move = False
+
+                # --- THỰC HIỆN HÀNH ĐỘNG ---
+                if should_move:
+                    source.remove_pallet(p_move)
+                    
+                    if not should_split:
+                        # Chuyển toàn bộ
+                        target.add_pallet(p_move)
+                        print(f"      -> FIX: Chuyển toàn bộ {p_move.id} (Qty: {p_move.quantity:.2f}) từ {source.id} sang {target.id}")
+                    else:
+                        # Tách ra chuyển một phần NGUYÊN
+                        keep, move = p_move.split(qty_can_accept)
+                        source.add_pallet(keep) # Trả lại phần giữ
+                        target.add_pallet(move) # Chuyển phần tách
+                        print(f"      -> FIX: Tách NGUYÊN chuyển {move.quantity:.0f} của {p_move.id} từ {source.id} sang {target.id}")
+                    
+                    source._recalculate_totals()
+                    target._recalculate_totals()
+                    has_action = True
+                    
+                    # Nếu sau khi chuyển, target đầy, cần break để check lại source
+                    break 
+
+    return has_action
+
+# ==============================================================================
+# PHASE 5.2: AGGRESSIVE BALANCER (MOVE & SWAP)
+# ==============================================================================
+
+def execute_smart_balance(active_containers):
+    """
+    Cân bằng tải trọng và số dòng giữa các container (Phiên bản V2 - Hỗ trợ Split-Swap).
+    1. MOVE: Chuyển từ nơi thừa sang nơi thiếu.
+    2. SWAP: Hoán đổi để cân bằng.
+    3. SPLIT-SWAP: Tách 1 phần của pallet nguyên lớn để hoán đổi (Giải quyết deadlock C1 vs C3).
+    """
+    has_changed = False
+    
+    # Sắp xếp container: Nặng nhất đứng đầu để ưu tiên xả tải
+    sorted_conts = sorted(active_containers, key=lambda c: c.total_weight, reverse=True)
+
+    for sender in sorted_conts:
+        for receiver in sorted_conts:
+            if sender.id == receiver.id: continue
+            
+            # --- CHIẾN THUẬT 1: MOVE (CHUYỂN THẲNG) ---
+            # Nếu Sender nặng hơn Receiver đáng kể, thử chuyển bớt hàng sang
+            if sender.total_weight > receiver.total_weight + 1000: # Giảm ngưỡng xuống 1000 để nhạy hơn
+                for p in list(sender.pallets):
+                    # Tính toán khả năng nhận của Receiver
+                    qty_fit = calculate_max_fit(p, receiver)
+                    
+                    if qty_fit > EPSILON:
+                        # Kiểm tra xem chuyển sang có giúp Sender đỡ nặng mà không làm Receiver bị quá tải không?
+                        # Logic calculate_max_fit đã đảm bảo Receiver không quá tải.
+                        
+                        sender.remove_pallet(p)
+                        if abs(p.quantity - qty_fit) < EPSILON:
+                            receiver.add_pallet(p)
+                            print(f"      [BAL] MOVE: {p.id} ({p.quantity:.2f}) từ {sender.id} -> {receiver.id}")
+                        else:
+                            # Tách ra chuyển
+                            keep, move = p.split(qty_fit)
+                            sender.add_pallet(keep)
+                            receiver.add_pallet(move)
+                            print(f"      [BAL] MOVE-SPLIT: {move.quantity:.2f} của {p.id} từ {sender.id} -> {receiver.id}")
+                        
+                        sender._recalculate_totals()
+                        receiver._recalculate_totals()
+                        return True # Restart loop để cập nhật state
+
+            # --- CHIẾN THUẬT 2: ADVANCED SWAP (HOÁN ĐỔI NÂNG CAO) ---
+            # Kịch bản Deadlock: Sender (C3) Full Cân, Receiver (C1) Full Dòng.
+            # Cần Sender đẩy bớt Cân (Pallet Nặng) sang Receiver.
+            # Cần Receiver đẩy bớt Dòng (Pallet Nhẹ/Bất kỳ) sang Sender.
+            
+            # Điều kiện kích hoạt: Sender nặng, Receiver nhẹ hơn
+            if sender.total_weight > 22000 and receiver.total_weight < 20000:
+                
+                # Tìm ứng viên: Sender cần đẩy pallet Nặng, Receiver cần đẩy pallet Nhẹ (để tiết kiệm cân cho Sender)
+                sender_candidates = sorted([p for p in sender.pallets], key=lambda x: x.total_weight, reverse=True)
+                receiver_candidates = sorted([p for p in receiver.pallets], key=lambda x: x.total_weight) # Nhẹ trước
+                
+                for p_send in sender_candidates:
+                    is_integer_send = p_send.quantity >= 1.0 - EPSILON and not p_send.is_combined
+                    
+                    for p_recv in receiver_candidates:
+                        # Chỉ đổi nếu pallet gửi đi nặng hơn pallet nhận về (để Sender giảm cân)
+                        weight_diff = p_send.total_weight - p_recv.total_weight
+                        if weight_diff < 500: continue # Chênh lệch không đáng kể thì thôi
+
+                        # --- LOGIC 2.1: SWAP NGUYÊN (Whole Swap) ---
+                        # Kiểm tra giới hạn Dòng và Cân
+                        lines_send = p_send.logical_pallet_count
+                        lines_recv = p_recv.logical_pallet_count
+                        
+                        # Dự kiến dòng mới
+                        new_lines_sender = sender.total_logical_pallets - lines_send + lines_recv
+                        new_lines_receiver = receiver.total_logical_pallets - lines_recv + lines_send
+                        
+                        # Dự kiến cân mới
+                        new_w_sender = sender.total_weight - p_send.total_weight + p_recv.total_weight
+                        new_w_receiver = receiver.total_weight - p_recv.total_weight + p_send.total_weight
+
+                        if (new_lines_sender <= MAX_PALLETS and new_lines_receiver <= MAX_PALLETS and
+                            new_w_sender <= MAX_WEIGHT and new_w_receiver <= MAX_WEIGHT):
+                            
+                            # Thực hiện Swap
+                            sender.remove_pallet(p_send)
+                            receiver.remove_pallet(p_recv)
+                            sender.add_pallet(p_recv)
+                            receiver.add_pallet(p_send)
+                            
+                            sender._recalculate_totals()
+                            receiver._recalculate_totals()
+                            print(f"      [BAL] SWAP: {sender.id} đổi {p_send.id} (W:{p_send.total_weight:.0f}) <-> {receiver.id} lấy {p_recv.id} (W:{p_recv.total_weight:.0f})")
+                            return True
+
+                        # --- LOGIC 2.2: SPLIT-SWAP (TÁCH ĐỂ ĐỔI - QUAN TRỌNG CHO DEADLOCK) ---
+                        # Nếu p_send là pallet nguyên lớn (ví dụ qty=5), thử tách 1 đơn vị ra để đổi
+                        if is_integer_send and p_send.quantity >= 2.0 - EPSILON:
+                            # Giả lập tách 1 đơn vị từ p_send
+                            qty_to_swap = 1.0
+                            weight_to_swap = p_send.weight_per_pallet
+                            lines_to_swap = 1 # Pallet nguyên tách 1 thì lines là 1
+                            
+                            # Tính lại chênh lệch cân nếu chỉ đổi 1 đơn vị
+                            split_weight_diff = weight_to_swap - p_recv.total_weight
+                            if split_weight_diff < 100: continue # Không bõ công đổi
+                            
+                            # Check giới hạn
+                            new_lines_s = sender.total_logical_pallets - lines_to_swap + lines_recv
+                            new_lines_r = receiver.total_logical_pallets - lines_recv + lines_to_swap
+                            
+                            new_w_s = sender.total_weight - weight_to_swap + p_recv.total_weight
+                            new_w_r = receiver.total_weight - p_recv.total_weight + weight_to_swap
+                            
+                            if (new_lines_s <= MAX_PALLETS and new_lines_r <= MAX_PALLETS and
+                                new_w_s <= MAX_WEIGHT and new_w_r <= MAX_WEIGHT):
+                                
+                                # THỰC HIỆN TÁCH VÀ ĐỔI
+                                keep, move = p_send.split(1.0) # Tách 1 đơn vị ra
+                                
+                                sender.remove_pallet(p_send) # Xóa cũ
+                                receiver.remove_pallet(p_recv) # Xóa đối ứng
+                                
+                                sender.add_pallet(keep) # Trả phần còn lại cho sender
+                                sender.add_pallet(p_recv) # Nhận hàng đổi
+                                
+                                receiver.add_pallet(move) # Nhận 1 đơn vị tách ra
+                                
+                                sender._recalculate_totals()
+                                receiver._recalculate_totals()
+                                print(f"      [BAL] SPLIT-SWAP: Tách 1.0 của {p_send.id} từ {sender.id} đổi lấy {p_recv.id} từ {receiver.id}")
+                                return True
+
+    return False
+# ==============================================================================
+# PHASE 4: DEEP INJECTION (NHÉT HÀNG TỪ WASTE VÀO)
+# ==============================================================================
+
+def attempt_injection(item_to_solve, active_containers):
+    """
+    Thử nhét item vào các container active.
+    
+    LOGIC SỬA ĐỔI:
+    - Nếu item_to_solve là Pallet Nguyên: 
+      + Cho phép tách thành các phần NGUYÊN để nhét vào (ví dụ còn 5, nhét 2 vào cont A, giữ 3 lại).
+    - Nếu item_to_solve là Pallet Lẻ/Gộp:
+      + Bắt buộc phải tìm được container chứa vừa TOÀN BỘ. Không được tách nhỏ.
+    """
+    # Sort container theo tiêu chí: cái nào còn vừa đúng chỗ thì ưu tiên (Best Fit)
+    best_conts = sorted(active_containers, key=lambda c: c.remaining_weight) 
+    
+    # Kiểm tra xem pallet đang xử lý có phải nguyên không
+    is_integer_pallet = item_to_solve.quantity >= 1.0 - EPSILON and not item_to_solve.is_combined
+
+    for cont in best_conts:
+        qty_fit = calculate_max_fit(item_to_solve, cont)
+        
+        # Nếu không vừa tí nào -> bỏ qua
+        if qty_fit < EPSILON:
+            continue
+
+        # 1. Fit toàn bộ (áp dụng cho cả Pallet Nguyên và Lẻ/Gộp)
+        if abs(qty_fit - item_to_solve.quantity) < EPSILON:
+             cont.add_pallet(item_to_solve)
+             cont._recalculate_totals()
+             print(f"      [INJECT] Fit toàn bộ {item_to_solve.id} (Qty: {item_to_solve.quantity:.2f}) vào {cont.id}")
+             return True, None
+        
+        # 2. Fit một phần (CHỈ ÁP DỤNG CHO PALLET NGUYÊN -> TÁCH NGUYÊN)
+        if is_integer_pallet:
+             # qty_fit lúc này đã được làm tròn xuống (floor) trong hàm calculate_max_fit
+             if qty_fit >= 1.0 - EPSILON:
+                 keep, move = item_to_solve.split(qty_fit)
+                 cont.add_pallet(move)
+                 cont._recalculate_totals()
+                 print(f"      [INJECT] Fit phần NGUYÊN {move.quantity:.0f} của {item_to_solve.id} vào {cont.id}")
+                 # Trả về True và phần còn lại (keep) để tiếp tục xử lý
+                 return True, keep 
+        
+        # Nếu là Pallet Lẻ/Gộp mà không fit toàn bộ -> Không làm gì cả, thử container tiếp theo
+
+    return False, item_to_solve
+
+# ==============================================================================
+# MAIN SOLVER: XỬ LÝ ITERATIVE
+# ==============================================================================
+def force_insert_by_shifting(item_to_insert, active_containers):
+    """
+    Hàm "Cưỡng chế chèn": Cố gắng tạo khoảng trống trong một container cụ thể
+    bằng cách đẩy (displace) các item hiện có sang các container khác.
+    
+    Quy tắc:
+    1. Chọn một container đích (target) có tiềm năng nhất.
+    2. Xác định các item "nạn nhân" (victims) cần phải di dời để lấy chỗ.
+    3. Thử di dời các nạn nhân sang các container khác.
+    4. Nếu di dời thành công, xếp item_to_insert vào target.
+    """
+    # 1. Sắp xếp các container đích tiềm năng (ưu tiên cái nào cần dọn ít nhất)
+    # Chúng ta chỉ xét các container mà nếu RỖNG thì chứa vừa item_to_insert (về mặt kỹ thuật)
+    potential_targets = []
+    
+    # Xác định tính chất item
+    is_integer_item = item_to_insert.quantity >= 1.0 - EPSILON and not item_to_insert.is_combined
+    item_lines = item_to_insert.logical_pallet_count
+    
+    for cont in active_containers:
+        # Kiểm tra lý thuyết: Nếu container này rỗng, nó có chứa nổi item này không?
+        # (Chỉ check MAX CONSTANTS, không check hiện trạng)
+        if item_lines > MAX_PALLETS or item_to_insert.total_weight > MAX_WEIGHT:
+            continue # Item quá to so với quy định chung của 1 container, không thể nhét vào đâu được
+            
+        # Tính "Độ khó" (Cost) để dọn chỗ: Cần thêm bao nhiêu weight/lines nữa?
+        deficit_weight = max(0, (cont.total_weight + item_to_insert.total_weight) - MAX_WEIGHT)
+        deficit_lines = max(0, (cont.total_logical_pallets + item_lines) - MAX_PALLETS)
+        
+        # Score thấp là tốt (cần dọn ít).
+        cost = deficit_weight + (deficit_lines * 1000) # Ưu tiên lines
+        potential_targets.append((cost, cont))
+
+    potential_targets.sort(key=lambda x: x[0])
+
+    # 2. Duyệt qua các target để thử
+    for cost, target_cont in potential_targets:
+        if cost == 0: 
+            # Thực ra đã vừa rồi, gọi hàm inject bình thường là xong (trường hợp hiếm)
+            target_cont.add_pallet(item_to_insert)
+            target_cont._recalculate_totals()
             return True
-        remaining_part = pallet_to_place
-        sorted_containers = sorted(target_containers, key=lambda c: c.total_quantity, reverse=True) # Ưu tiên lấp đầy cont gần đầy
-        is_integer_logic = abs(pallet_to_place.quantity - round(pallet_to_place.quantity)) < EPSILON
 
-        for container in sorted_containers:
-            if remaining_part is None or remaining_part.quantity < EPSILON:
+        # Tìm các "nạn nhân" để di dời
+        # Chiến thuật: Lấy các pallet nhỏ/nhẹ ra trước cho dễ xếp chỗ khác
+        # Sắp xếp pallet trong target_cont: Ưu tiên Pallet Nguyên (dễ tách) hoặc Pallet nhỏ
+        candidates = sorted(target_cont.pallets, key=lambda p: (p.is_combined, p.quantity))
+        
+        victims = []
+        recovered_weight = 0
+        recovered_lines = 0
+        
+        needed_weight = deficit_weight
+        needed_lines = deficit_lines
+        
+        possible_to_clear = False
+        
+        for p in candidates:
+            victims.append(p)
+            recovered_weight += p.total_weight
+            recovered_lines += p.logical_pallet_count
+            
+            if recovered_weight >= needed_weight - EPSILON and recovered_lines >= needed_lines:
+                possible_to_clear = True
                 break
+        
+        if not possible_to_clear:
+            continue # Không đủ hàng để dọn chỗ (ví dụ container toàn hàng nặng mà mình cần dòng)
 
-            # === ĐIỂM SỬA LỖI TRỌNG TÂM: TÍNH TOÁN THỦ CÔNG ===
-            # Bỏ qua .remaining_weight và .remaining_quantity, tự tính toán
-            rem_qty = MAX_PALLETS_STRICT - container.total_quantity
-            rem_wgt = MAX_WEIGHT_FLEXIBLE - container.total_weight
-            rem_lp = MAX_PALLETS_STRICT - container.total_logical_pallets
+        # 3. Thử di dời các nạn nhân (Mô phỏng)
+        # Tạo danh sách container "khác" (trừ target_cont)
+        other_containers = [c for c in active_containers if c.id != target_cont.id]
+        
+        can_relocate_all_victims = True
+        relocation_plan = [] # List tuple (victim, destination_container)
 
-            if rem_qty < EPSILON or rem_wgt < EPSILON or rem_lp < 1:
+        # Tạo bản sao trạng thái weight/lines của các other_containers để tính toán tích lũy
+        sim_states = {c.id: {'w': c.total_weight, 'l': c.total_logical_pallets} for c in other_containers}
+
+        for vic in victims:
+            victim_moved = False
+            # Sort other containers (Best fit)
+            sorted_others = sorted(other_containers, key=lambda c: sim_states[c.id]['w'])
+            
+            for dest in sorted_others:
+                # Check capacity với trạng thái sim
+                cur_w = sim_states[dest.id]['w']
+                cur_l = sim_states[dest.id]['l']
+                
+                # Check xem victim có vào được dest không
+                # Lưu ý: Ở đây ta di chuyển NGUYÊN victim, không tách lẻ nữa để đơn giản hóa
+                # (Vì victim đang nằm yên ổn, tách ra lại phức tạp)
+                if (cur_w + vic.total_weight <= MAX_WEIGHT + EPSILON) and \
+                   (cur_l + vic.logical_pallet_count <= MAX_PALLETS):
+                    
+                    # OK, ghi nhận
+                    sim_states[dest.id]['w'] += vic.total_weight
+                    sim_states[dest.id]['l'] += vic.logical_pallet_count
+                    relocation_plan.append((vic, dest))
+                    victim_moved = True
+                    break
+            
+            if not victim_moved:
+                can_relocate_all_victims = False
+                break
+        
+        # 4. Thực thi nếu thành công
+        if can_relocate_all_victims:
+            print(f"      [SHIFT] Dọn chỗ Container {target_cont.id} để đón {item_to_insert.id}:")
+            # a. Di dời victims
+            for vic, dest in relocation_plan:
+                target_cont.remove_pallet(vic)
+                dest.add_pallet(vic)
+                print(f"        -> Đẩy {vic.id} sang {dest.id}")
+                dest._recalculate_totals()
+            
+            # b. Thêm item mới vào
+            target_cont.add_pallet(item_to_insert)
+            target_cont._recalculate_totals()
+            print(f"        -> [OK] Đã chèn {item_to_insert.id} vào {target_cont.id}")
+            return True
+
+    return False
+def solve_waste_container_iteratively(containers):
+    """
+    [HÀM MỚI] Vòng lặp cấp cao: Tự động lặp lại quy trình xử lý
+    cho đến khi không còn container nào có thể loại bỏ được nữa.
+    Giải quyết vấn đề: Xử lý xong C4 sẽ tự động quay lại xử lý C3.
+    """
+    current_containers = containers
+    iteration = 1
+    
+    while True:
+        previous_count = len(current_containers)
+        
+        # Nếu chỉ còn 1 container hoặc ít hơn thì không cần lặp nữa
+        if previous_count <= 1:
+            return current_containers
+
+        print(f"\n🔥🔥🔥 [GLOBAL LOOP {iteration}] Kiểm tra khả năng loại bỏ Container cuối cùng (Hiện có: {previous_count}) 🔥🔥🔥")
+        
+        # Gọi hàm xử lý logic cũ (đã được đổi tên bên dưới)
+        # Hàm này sẽ thử "tiêu hủy" container cuối cùng hiện tại
+        current_containers = _core_logic_solve_waste(current_containers)
+        
+        new_count = len(current_containers)
+        
+        # KIỂM TRA: Nếu số lượng container GIẢM ĐI (tức là đã tiêu hủy thành công)
+        if new_count < previous_count:
+            print(f"   >>> [AUTO-NEXT] Thành công loại bỏ 1 container. Hệ thống tự động lặp lại để kiểm tra container tiếp theo...")
+            iteration += 1
+            continue # Lặp lại ngay lập tức để xử lý "người sống sót" cuối cùng mới
+        else:
+            # Nếu số lượng không đổi -> Nghĩa là không thể xử lý được nữa -> Dừng
+            print(f"   >>> [STOP] Không thể loại bỏ thêm container nào nữa (Container cuối cùng đã tối ưu). Kết thúc.")
+            return current_containers
+def _core_logic_solve_waste(containers):
+    """
+    Hàm xử lý container lãng phí phiên bản V3.2 - AGGRESSIVE SWAP
+    """
+    print("\n" + "="*60)
+    print("BẮT ĐẦU QUY TRÌNH ITERATIVE SOLVER (V3.2 - AGGRESSIVE SWAP)")
+    print("="*60)
+
+    if len(containers) <= 1:
+        return containers
+
+    waste_container = containers[-1]
+    active_containers = containers[:-1]
+
+    # --- CHECK KHẢ THI TỔNG THỂ ---
+    req_lines = waste_container.total_logical_pallets
+    req_weight = waste_container.total_weight
+    avail_lines = sum(MAX_PALLETS - c.total_logical_pallets for c in active_containers)
+    avail_weight = sum(MAX_WEIGHT - c.total_weight for c in active_containers)
+    
+    print(f"   [CHECK] Nhu cầu: {req_lines} dòng, {req_weight:.2f}kg")
+    print(f"   [CHECK] Khả dụng: {avail_lines} dòng, {avail_weight:.2f}kg")
+    
+    if avail_lines < req_lines or avail_weight < req_weight - EPSILON:
+         print("   -> [STOP] Không đủ không gian tổng thể. Trả về.")
+         return containers
+
+    # Lấy items từ Waste ra
+    items_queue = sorted(waste_container.pallets, key=lambda p: (p.is_combined, p.quantity), reverse=True)
+    waste_container.pallets = [] 
+    waste_container._recalculate_totals()
+    
+    failed_items_buffer = []
+    loop_count = 0
+    max_loops = 50 # Giảm số loop nhưng làm chất lượng hơn
+    
+    while (items_queue or failed_items_buffer) and loop_count < max_loops:
+        loop_count += 1
+        
+        if not items_queue and failed_items_buffer:
+            items_queue = failed_items_buffer
+            failed_items_buffer = []
+            print(f"\n   >>> [LOOP {loop_count}] Retry {len(items_queue)} items thất bại...")
+            
+            # MỖI LẦN RETRY, GỌI CÂN BẰNG TẢI TRỌNG TRƯỚC
+            print("   >>> [RETRY] Kích hoạt Smart Balance để dọn đường...")
+            balanced = False
+            # Chạy cân bằng vài lần để ổn định hệ thống
+            for _ in range(3): 
+                if execute_smart_balance(active_containers):
+                    balanced = True
+                else:
+                    break # Không còn gì để cân bằng
+            if balanced:
+                print("   >>> [RETRY] Hệ thống đã được cân bằng lại. Thử nhét tiếp.")
+
+        if not items_queue:
+            break
+
+        current_item = items_queue.pop(0)
+        print(f"\n   [-] Xử lý item: {current_item.id} (Qty: {current_item.quantity:.2f})")
+
+        # CHIẾN THUẬT 1: NHÉT TRỰC TIẾP
+        success, remaining = attempt_injection(current_item, active_containers)
+        if success:
+            if remaining and remaining.quantity > EPSILON:
+                items_queue.insert(0, remaining)
+            print("      -> Direct Inject: OK")
+            continue
+
+        # CHIẾN THUẬT 2: SỬA LỖI & CÂN BẰNG NGAY LẬP TỨC
+        fix_container_overflows(active_containers)
+        if execute_smart_balance(active_containers):
+            # Nếu cân bằng có tác dụng, thử nhét lại ngay
+            success_retry, remaining_retry = attempt_injection(current_item, active_containers)
+            if success_retry:
+                if remaining_retry and remaining_retry.quantity > EPSILON:
+                    items_queue.insert(0, remaining_retry)
+                print("      -> Inject after Balance: OK")
                 continue
 
-            # Tính toán lượng có thể xếp dựa trên các giới hạn tự tính
-            qty_by_vol = rem_qty
-            qty_by_wgt = rem_wgt / remaining_part.weight_per_pallet if remaining_part.weight_per_pallet > 0 else float('inf')
-            max_fit_quantity = min(remaining_part.quantity, qty_by_vol, qty_by_wgt)
+        # CHIẾN THUẬT 3: CƯỠNG CHẾ DỊCH CHUYỂN
+        if force_insert_by_shifting(current_item, active_containers):
+            continue
 
-            fit_quantity = math.floor(max_fit_quantity) if is_integer_logic else max_fit_quantity
-
-            if (is_integer_logic and fit_quantity < 1.0 - EPSILON) or (not is_integer_logic and fit_quantity < EPSILON):
-                continue
-
-            if abs(remaining_part.quantity - fit_quantity) < EPSILON:
-                # Kiểm tra thủ công thay vì dùng container.can_fit()
-                check_lp = container.total_logical_pallets + remaining_part.logical_pallet_count <= MAX_PALLETS_STRICT
-                if check_lp:
-                    container.add_pallet(remaining_part)
-                    print(f"       -> ({placement_type}) Đã xếp (toàn bộ) {remaining_part.id} vào container {container.id}")
-                    remaining_part = None
+        # CHIẾN THUẬT 4: TÁCH NHỎ (NẾU LÀ PALLET NGUYÊN)
+        if current_item.quantity >= 2.0 - EPSILON and not current_item.is_combined:
+            print("      -> Quá to. Tách nhỏ ra để thử...")
+            keep, move_1 = current_item.split(1.0)
+            if force_insert_by_shifting(move_1, active_containers):
+                items_queue.insert(0, keep)
                 continue
             else:
-                if fit_quantity > EPSILON:
-                    rest, piece_to_add = remaining_part.split(fit_quantity)
-                    # Kiểm tra thủ công thay vì dùng container.can_fit()
-                    check_lp_split = container.total_logical_pallets + piece_to_add.logical_pallet_count <= MAX_PALLETS_STRICT
-                    if check_lp_split:
-                        container.add_pallet(piece_to_add)
-                        print(f"       -> ({placement_type}) Đã xếp (một phần) {piece_to_add.id} (qty: {piece_to_add.quantity:.2f}) vào cont {container.id}")
-                        remaining_part = rest
-
-        return remaining_part is None or remaining_part.quantity < EPSILON
-
-    # --- Vòng lặp tối ưu hóa chính (Giữ nguyên logic tổng thể) ---
-    while True:
-        if len(containers) <= 1:
-            print("\nChỉ còn 1 container hoặc không còn, dừng hợp nhất.")
-            break
-
-        containers.sort(key=lambda c: (c.total_quantity, c.total_logical_pallets, c.total_weight))
-        target_container = containers[0]
-        other_containers = containers[1:]
-
-        print(f"\n--- Bắt đầu lượt hợp nhất mới. MỤC TIÊU: Container {target_container.id} (QTY: {target_container.total_quantity:.2f}) ---")
-
-        # --- BƯỚC 1: KIỂM TRA SƠ BỘ ---
-        target_load = {'qty': target_container.total_quantity, 'lp': target_container.total_logical_pallets}
-        remaining_capacity = {
-            'qty': sum(MAX_PALLETS_STRICT - c.total_quantity for c in other_containers),
-            'lp': sum(MAX_PALLETS_STRICT - c.total_logical_pallets for c in other_containers)
-        }
-        if not (remaining_capacity['qty'] >= target_load['qty'] and remaining_capacity['lp'] >= target_load['lp']):
-            print(f" -> KIỂM TRA THẤT BẠI: Tổng sức chứa còn lại không đủ. Dừng quá trình hợp nhất.")
-            break
-        print(" -> KIỂM TRA THÀNH CÔNG: Sức chứa về lý thuyết là đủ. Bắt đầu tìm kế hoạch.")
-
-        # --- BƯỚC 2: KẾ HOẠCH A - HỢP NHẤT NGUYÊN VẸN (ĐÃ IMPLEMENT) ---
-        print(f"\n   [KẾ HOẠCH A] Thử hợp nhất NGUYÊN VẸN pallet từ {target_container.id}...")
-        temp_other_containers_A = copy.deepcopy(other_containers)
-        plan_A_successful = True
-        
-        # Sắp xếp pallet cần di chuyển (ưu tiên pallet lớn trước) để tăng khả năng thành công
-        pallets_to_move_whole = sorted(target_container.pallets, key=lambda p: p.logical_pallet_count, reverse=True)
-
-        for pallet in pallets_to_move_whole:
-            placed = False
-            # Sắp xếp các container đích để ưu tiên lấp đầy những cont đã gần đầy
-            for temp_cont in sorted(temp_other_containers_A, key=lambda c: c.total_quantity, reverse=True):
-                # Kiểm tra thủ công xem pallet NGUYÊN VẸN có vừa không
-                can_fit_qty = (temp_cont.total_quantity + pallet.quantity) <= MAX_PALLETS_STRICT + EPSILON
-                can_fit_wgt = (temp_cont.total_weight + pallet.total_weight) <= MAX_WEIGHT_FLEXIBLE + EPSILON
-                can_fit_lp = (temp_cont.total_logical_pallets + pallet.logical_pallet_count) <= MAX_PALLETS_STRICT + EPSILON
-                
-                if can_fit_qty and can_fit_wgt and can_fit_lp:
-                    temp_cont.add_pallet(pallet)
-                    print(f"       -> (Kế hoạch A) Dự tính xếp {pallet.id} vào container {temp_cont.id}")
-                    placed = True
-                    break # Pallet đã được xếp, chuyển sang pallet tiếp theo
-
-            if not placed:
-                plan_A_successful = False
-                print(f"   -> THẤT BẠI (Kế hoạch A): Không tìm được chỗ cho pallet NGUYÊN VẸN {pallet.id}.")
-                break # Dừng Kế hoạch A ngay lập tức
-
-        if plan_A_successful:
-            print(f"   -> THÀNH CÔNG (Kế hoạch A). Thực thi hợp nhất.")
-            containers = temp_other_containers_A
-            print(f"   >>> Đã hợp nhất thành công và loại bỏ container {target_container.id}. Tiếp tục vòng lặp...")
-            continue # Quay lại đầu vòng lặp while với danh sách container đã được rút gọn
-
-        # --- BƯỚC 3: KẾ HOẠCH B - CHIA TÁCH THÔNG MINH ---
-        # Chỉ chạy nếu Kế hoạch A thất bại
-        print(f"\n   [KẾ HOẠCH B] Kế hoạch A thất bại. Thử CHIA TÁCH THÔNG MINH pallet từ {target_container.id}...")
-        pallets_to_move_split = list(target_container.pallets)
-        temp_other_containers_B = copy.deepcopy(other_containers)
-        
-        all_pallets_placed = True
-        for pallet in pallets_to_move_split:
-            was_placed = _place_pallet_iteratively_flexible(pallet, temp_other_containers_B, "Hợp nhất")
-            if not was_placed:
-                all_pallets_placed = False
-                print(f"   -> THẤT BẠI (Kế hoạch B): Không thể xếp vừa tất cả các mảnh của pallet {pallet.id}.")
-                break
-        
-        if all_pallets_placed:
-            print(f"   -> THÀNH CÔNG (Kế hoạch B). Thực thi hợp nhất.")
-            containers = temp_other_containers_B
-            print(f"   >>> Đã hợp nhất thành công và loại bỏ container {target_container.id}. Tiếp tục vòng lặp...")
-            continue
+                 # Nếu tách ra vẫn ko nhét được thì trả lại để thử ở loop sau (sau khi balance)
+                 failed_items_buffer.append(current_item) 
         else:
-            print(f"\n -> Đã thử cả hai kế hoạch nhưng không thể hợp nhất {target_container.id}. Quá trình tối ưu kết thúc.")
-            break # Thoát khỏi vòng lặp while vì không thể dồn container mục tiêu
+             failed_items_buffer.append(current_item)
 
-    print("\n" + "="*80)
-    print("KẾT THÚC GIAI ĐOẠN 4")
-    print(f"Số container cuối cùng: {len(containers)}")
-    print("="*80)
-    return containers
+    # KẾT THÚC
+    fix_container_overflows(active_containers)
 
+    if failed_items_buffer:
+        print(f"\n   [CẢNH BÁO] Vẫn còn dư {len(failed_items_buffer)} items.")
+        for item in failed_items_buffer:
+            waste_container.add_pallet(item)
+        waste_container._recalculate_totals()
+        active_containers.append(waste_container)
+    else:
+        print("\n   -> [SUCCESS] Đã giải quyết hoàn toàn Waste Container.")
+
+    return active_containers
 def optimize_cross_company_combination(combined_pallets, uncombined_pallets, next_combined_id_start):
     """
     Giai đoạn tối ưu hóa NÂNG CAO: Thử ghép các pallet lẻ hoặc đã ghép
