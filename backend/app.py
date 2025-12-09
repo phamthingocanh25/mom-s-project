@@ -519,7 +519,7 @@ def _generate_response_from_containers(containers):
 def process_data():
     """
     API endpoint để xử lý và tối ưu hóa việc xếp pallet vào container.
-    Hàm này sử dụng pipeline xử lý đầy đủ từ file test_p2.py.
+    Hàm này sử dụng pipeline xử lý đầy đủ, đồng bộ với logic 'Iterative Solver V3' từ test_p2.py.
     """
     try:
         data = request.get_json()
@@ -530,24 +530,30 @@ def process_data():
             return jsonify({"success": False, "error": "Thiếu thông tin file hoặc sheet."}), 400
 
         # --- GIAI ĐOẠN 1: TẢI DỮ LIỆU ---
+        # Tải dữ liệu thô từ file Excel
         all_pallets, error = load_and_prepare_pallets(filepath, sheet_name)
         if error:
             return jsonify({"success": False, "error": error}), 400
         if not all_pallets:
             return jsonify({"success": False, "error": "Không có dữ liệu pallet hợp lệ để xử lý."}), 400
 
-        # --- GIAI ĐOẠN 2: THỰC THI PIPELINE TỐI ƯU HÓA (LOGIC TỪ TEST_P2.PY) ---
+        # ==========================================================================================
+        # BẮT ĐẦU PIPELINE TỐI ƯU HÓA (LOGIC TỪ TEST_P2.PY)
+        # ==========================================================================================
         
-        # BƯỚC 2: TÁCH TOÀN BỘ PALLET THÀNH PHẦN NGUYÊN VÀ LẺ
+        # --- BƯỚC 2: TÁCH TOÀN BỘ PALLET THÀNH PHẦN NGUYÊN VÀ LẺ ---
+        print("\n# BƯỚC 2: TÁCH TOÀN BỘ PALLET THÀNH PHẦN NGUYÊN VÀ LẺ #")
         integer_pallets, fractional_pallets = split_integer_fractional_pallets(all_pallets)
 
-        # BƯỚC 3: XỬ LÝ PALLET NGUYÊN QUÁ KHỔ
+        # --- BƯỚC 3: XỬ LÝ PALLET NGUYÊN QUÁ KHỔ ---
+        print("\n# BƯỚC 3: XỬ LÝ PALLET NGUYÊN QUÁ KHỔ #")
         oversized_containers, regular_sized_integer_pallets, container_id_counter = handle_all_oversized_pallets(
             all_pallets=integer_pallets,
             start_container_id=1
         )
 
-        # BƯỚC 4: XẾP CÁC PALLET NGUYÊN CÒN LẠI
+        # --- BƯỚC 4: XẾP CÁC PALLET NGUYÊN CÓ KÍCH THƯỚC BÌNH THƯỜNG ---
+        print("\n# BƯỚC 4: XẾP PALLET NGUYÊN CÓ KÍCH THƯỚC BÌNH THƯỜNG #")
         final_containers = list(oversized_containers)
         final_containers, unplaced_integer_pallets, container_id_counter = pack_integer_pallets(
             regular_sized_integer_pallets,
@@ -555,7 +561,8 @@ def process_data():
             container_id_counter
         )
 
-        # BƯỚC 5: GỘP PALLET LẺ CÙNG CÔNG TY
+        # --- BƯỚC 5: GỘP PALLET LẺ CÙNG CÔNG TY ---
+        print("\n# BƯỚC 5: GỘP PALLET LẺ CÙNG CÔNG TY #")
         combined_pallets_same_company, uncombined_pallets = combine_fractional_pallets(fractional_pallets)
         
         last_combined_id = 0
@@ -563,15 +570,20 @@ def process_data():
             last_combined_id = max([int(re.search(r'\d+', p.id).group()) for p in combined_pallets_same_company])
         next_id_for_mixed = last_combined_id + 1
 
-        # BƯỚC 5.5: TỐI ƯU HÓA GHÉP LIÊN CÔNG TY
+        # --- BƯỚC 5.5: TỐI ƯU HÓA GHÉP LIÊN CÔNG TY ---
+        print("\n# BƯỚC 5.5: TỐI ƯU HÓA GHÉP LIÊN CÔNG TY #")
         newly_combined_mixed, remaining_fractionals, next_id_for_mixed = optimize_cross_company_combination(
             combined_pallets_same_company, uncombined_pallets, next_id_for_mixed
         )
         
+        # Gộp tất cả các pallet lẻ/gộp lại để chuẩn bị xếp
         pallets_to_pack_fractional = newly_combined_mixed + remaining_fractionals
+        
+        # Xếp các pallet fractional đã tối ưu vào container
         unplaced_fractional_pallets = pack_fractional_pallets(pallets_to_pack_fractional, final_containers)
 
-        # BƯỚC 6: VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ
+        # --- BƯỚC 6: VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ ---
+        print("\n# BƯỚC 6: VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ #")
         loop_counter = 0
         while unplaced_integer_pallets or unplaced_fractional_pallets:
             loop_counter += 1
@@ -580,43 +592,61 @@ def process_data():
                 break
 
             pallets_before_iteration = len(unplaced_integer_pallets) + len(unplaced_fractional_pallets)
+            print(f"\n--- Bắt đầu vòng lặp xử lý pallet chờ lần thứ {loop_counter} ---")
 
-            # 6.1: Xử lý pallet nguyên chờ
+            # === 6.1: ƯU TIÊN XỬ LÝ DANH SÁCH PALLET NGUYÊN CHỜ ===
             if unplaced_integer_pallets:
+                # 6.1.1: Cố gắng xếp vào container cùng công ty
                 unplaced_integer_pallets = try_pack_pallets_into_same_company_containers(unplaced_integer_pallets, final_containers)
+
                 if unplaced_integer_pallets:
+                    # 6.1.2: Kiểm tra khả năng cross-ship toàn bộ
                     can_cross_ship_all = check_cross_ship_capacity_for_list(unplaced_integer_pallets, final_containers, unplaced_fractional_pallets)
+                    
                     if can_cross_ship_all:
+                        # Logic chia tách thông minh
                         unplaced_integer_pallets = handle_unplaced_pallets_with_smart_splitting(unplaced_integer_pallets, final_containers, unplaced_fractional_pallets)
                         if unplaced_integer_pallets:
                             final_containers, container_id_counter = handle_remaining_integers_iteratively(unplaced_integer_pallets, final_containers, container_id_counter)
                             unplaced_integer_pallets = []
                     else:
+                        # Thử tối ưu hóa từng phần (Partial Cross-ship)
                         unplaced_integer_pallets = attempt_partial_cross_ship(unplaced_integer_pallets, final_containers, unplaced_fractional_pallets)
+                        
+                        # Nếu vẫn còn, tạo container mới
                         if unplaced_integer_pallets:
                             unplaced_integer_pallets, final_containers, container_id_counter = create_and_pack_one_new_container(
                                 unplaced_integer_pallets, final_containers, container_id_counter, unplaced_fractional_pallets
                             )
 
-            # 6.2: Xử lý pallet lẻ/gộp chờ
+            # === 6.2: XỬ LÝ DANH SÁCH PALLET LẺ/GỘP CHỜ ===
             if unplaced_fractional_pallets:
+                # 6.2.1: Thử xếp nguyên vẹn cùng công ty
                 unplaced_fractional_pallets = try_pack_unplaced_fractionals_same_company(unplaced_fractional_pallets, final_containers)
+                
+                # 6.2.2: Lắp ghép nâng cao (Repack)
                 if unplaced_fractional_pallets:
                     unplaced_fractional_pallets = repack_unplaced_pallets(unplaced_fractional_pallets, final_containers)
+                
+                # 6.2.3: Chia nhỏ tỉ mỉ (Split & Fit)
                 if unplaced_fractional_pallets:
                    final_containers, container_id_counter, unplaced_fractional_pallets = split_and_fit_leftovers(
                            unplaced_fractional_pallets, final_containers, container_id_counter
                    )
+                
+                # 6.2.4: Xếp chéo (Cross-ship)
                 if unplaced_fractional_pallets:
                   unplaced_fractional_pallets, container_id_counter = cross_ship_remaining_pallets(
                       unplaced_pallets=unplaced_fractional_pallets,
                       containers=final_containers,
                       next_container_id=container_id_counter,
-                      unplaced_integer_pallets=unplaced_integer_pallets
+                      unplaced_integer_pallets=unplaced_integer_pallets # Truyền thêm tham số này
                  )
 
-            # 6.3: Kiểm tra tiến triển
+            # === 6.3: KIỂM TRA TIẾN TRIỂN ===
             pallets_after_iteration = len(unplaced_integer_pallets) + len(unplaced_fractional_pallets)
+            
+            # Kiểm tra xem có bị lặp vô hạn không
             if pallets_after_iteration > 0 and pallets_after_iteration == pallets_before_iteration:
                 print("Warning: No progress in packing loop. Breaking to avoid infinite loop.")
                 if unplaced_integer_pallets:
@@ -627,9 +657,11 @@ def process_data():
                     for p in unplaced_fractional_pallets: print(f"  - {p}")
                 break
             
-            # 6.4: XỬ LÝ PALLET HỖN HỢP CÒN SÓT LẠI VÀO CUỐI VÒNG LẶP
+            # === 6.4: XỬ LÝ PALLET HỖN HỢP CÒN SÓT LẠI VÀO CUỐI VÒNG LẶP ===
             mixed_pallets_to_place = [p for p in unplaced_fractional_pallets if "+" in str(p.company)]
+            
             if mixed_pallets_to_place:
+                print(f"-> CUỐI VÒNG LẶP: Xử lý {len(mixed_pallets_to_place)} pallet hỗn hợp...")
                 for mixed_pallet in list(mixed_pallets_to_place):
                     placed = False
                     for container in sorted(final_containers, key=lambda c: c.remaining_quantity):
@@ -642,20 +674,32 @@ def process_data():
                         print(f"  [-] (Chưa xếp được) Pallet hỗn hợp {mixed_pallet.id} vẫn trong danh sách chờ.")
 
 
-        # --- GIAI ĐOẠN 3: TỐI ƯU HÓA HỢP NHẤT CUỐI CÙNG (PHASE 4) ---
-        fully_optimized_containers = phase_4_final_consolidation(final_containers)
+        # --- GIAI ĐOẠN TỐI ƯU: XỬ LÝ CONTAINER LÃNG PHÍ (ITERATIVE SOLVER V3) ---
+        print("\n" + "="*80)
+        print("BẮT ĐẦU GIAI ĐOẠN TỐI ƯU HÓA: XỬ LÝ CONTAINER LÃNG PHÍ (ITERATIVE SOLVER V3)")
+        print("="*80)
+        
+        # [QUAN TRỌNG] Thay thế hàm phase_4 cũ bằng hàm solve_waste_container_iteratively
+        fully_optimized_containers = solve_waste_container_iteratively(final_containers)
 
-        # --- GIAI ĐOẠN 4: HOÀN THIỆN VÀ TRẢ KẾT QUẢ ---
+        # ==========================================================================================
+        # KẾT THÚC PIPELINE TỐI ƯU HÓA
+        # ==========================================================================================
+
+        # --- GIAI ĐOẠN 7: HOÀN THIỆN VÀ TRẢ KẾT QUẢ ---
+        # Sắp xếp và đặt lại tên container theo thứ tự
         fully_optimized_containers.sort(key=lambda c: int(re.search(r'\d+', c.id).group()))
         for i, container in enumerate(fully_optimized_containers, 1):
             container.id = f"Cont_{i}"
 
+        # Chuyển đổi sang JSON response
         response_dict = _generate_response_from_containers(fully_optimized_containers)
         final_response = {
             "success": response_dict.get("success", True),
             "results": response_dict.get("data", [])
         }
         
+        # Thêm thông tin về các pallet không thể xếp (nếu có)
         unplaced_info = []
         for p in (unplaced_integer_pallets or []):
             unplaced_info.append(f"Pallet nguyên: {p.id} ({p.quantity} qty, {p.total_weight} wgt)")
@@ -666,7 +710,9 @@ def process_data():
             final_response["warning"] = "Không thể xếp hết tất cả pallet. Các pallet còn lại là:"
             final_response["unplaced_pallets"] = unplaced_info
 
+        # Dọn dẹp bộ nhớ
         gc.collect()
+        
         return jsonify(final_response)
 
     except Exception as e:
