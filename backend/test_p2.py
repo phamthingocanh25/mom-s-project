@@ -63,9 +63,9 @@ def print_container_status(containers, step_name, integer_wait_list=None, fracti
 
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
-    # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia-cont-testing (1) (1) (1).xlsx    Chia-cont-2025-filled-data-1.xlsx
-    file_path = "C:\\Users\\admin\\Downloads\\Chia-cont-2025-dec-19.xlsx"
-    sheet_name = "19_Dec"
+    # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia cont - 2025(AutoRecovered) (2).xlsx
+    file_path = "C:\\Users\\admin\\Downloads\\Check_loi.xlsx"
+    sheet_name = "Sheet1"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
     
@@ -121,24 +121,46 @@ if __name__ == "__main__":
             last_combined_id = max([int(re.search(r'\d+', p.id).group()) for p in combined_pallets_same_company])
         next_id_for_mixed = last_combined_id + 1
 
-
         # --- BƯỚC 5.5 (LOGIC MỚI): TỐI ƯU HÓA GHÉP LIÊN CÔNG TY ---
+        print("\n# BƯỚC 5.5: TỐI ƯU HÓA GHÉP LIÊN CÔNG TY #")
         newly_combined_mixed, remaining_fractionals, next_id_for_mixed = optimize_cross_company_combination(
             combined_pallets_same_company, uncombined_pallets, next_id_for_mixed
         )
-
-        # Gộp tất cả các pallet lẻ/gộp lại để chuẩn bị xếp
-        pallets_to_pack_fractional = newly_combined_mixed + remaining_fractionals
+        # --- BƯỚC 5.5b (MỚI): NỚI LỎNG NGƯỠNG GỘP LÊN 0.95 ---
+        print("\n# BƯỚC 5.5b: NỚI LỎNG NGƯỠNG GỘP LÊN 0.95 (CÙNG & LIÊN CTY) #")
+        # Phân loại lại danh sách hiện tại trước khi đưa vào hàm nới lỏng
+        current_combined_5_5 = newly_combined_mixed + [p for p in remaining_fractionals if p.is_combined]
+        current_single_5_5 = [p for p in remaining_fractionals if not p.is_combined]
         
-        # Xếp các pallet fractional đã tối ưu vào container
+        relaxed_combined, relaxed_singles, next_id_for_mixed = optimize_combination_relaxed_threshold(
+            current_combined_5_5, current_single_5_5, next_id_for_mixed, threshold=0.95
+        )
+
+        # CHÚ Ý: KHÔNG xếp vào container (pack_fractional_pallets) ở đây. 
+        # Cứ giữ pallet ở dạng danh sách chờ để tiếp tục mang đi cắt ghép ở bước 5.6!
+
+        # --- BƯỚC 5.6 (LOGIC MỚI): TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP ---
+        print("\n# BƯỚC 5.6: TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP #")
+        # ĐỔI THAM SỐ ĐẦU VÀO THÀNH KẾT QUẢ CỦA BƯỚC 5.5b
+        final_combined_5_6, final_singles_5_6 = optimize_by_splitting_and_filling_fractionals(
+            relaxed_combined, 
+            relaxed_singles
+        )
+
+        # 3. Gộp tất cả các pallet lẻ/gộp CỦA BƯỚC CUỐI CÙNG lại để xếp
+        pallets_to_pack_fractional = final_combined_5_6 + final_singles_5_6
+        
+        # 4. BÂY GIỜ MỚI XẾP VÀO CONTAINER (CHỈ 1 LẦN DUY NHẤT)
+        print("\n# XẾP PALLET LẺ/GỘP VÀO CONTAINER #")
         unplaced_fractional_pallets = pack_fractional_pallets(pallets_to_pack_fractional, final_containers)
 
         print_container_status(
             containers=final_containers,
-            step_name="BƯỚC 5.5: SAU KHI TỐI ƯU LIÊN CÔNG TY VÀ XẾP LẦN ĐẦU",
+            step_name="BƯỚC 5.6: SAU KHI TỐI ƯU LIÊN CTY, TÁCH LẤP ĐẦY VÀ XẾP",
             integer_wait_list=unplaced_integer_pallets,
             fractional_wait_list=unplaced_fractional_pallets
         )
+
         # --- BƯỚC 6 (MỚI): VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ ---
         print("\n# BƯỚC 6 (MỚI): VÒNG LẶP XỬ LÝ TOÀN BỘ PALLET CHỜ #")
         loop_counter = 0
@@ -189,10 +211,30 @@ if __name__ == "__main__":
             if unplaced_fractional_pallets:
                 print(f"-> Đang xử lý {len(unplaced_fractional_pallets)} pallet LẺ/GỘP trong danh sách chờ...")
                 
-                # 6.2.1: Thử xếp nguyên vẹn pallet vào container cùng công ty trước (Ưu tiên hàng đầu).
+                # 6.2.1: Thử xếp nguyên vẹn pallet vào container cùng công ty trước.
                 unplaced_fractional_pallets = try_pack_unplaced_fractionals_same_company(
                     unplaced_fractional_pallets, final_containers
                 )
+
+                # --- MỚI THÊM: DỜI LOGIC XỬ LÝ PALLET HỖN HỢP LÊN ĐÂY ---
+                mixed_pallets_to_place = [p for p in unplaced_fractional_pallets if "+" in str(p.company)]
+                # Lọc bỏ pallet hỗn hợp khỏi danh sách chờ chung để bảo vệ chúng khỏi bị xé nhỏ
+                unplaced_fractional_pallets = [p for p in unplaced_fractional_pallets if "+" not in str(p.company)]
+
+                if mixed_pallets_to_place:
+                    print(f"-> Xử lý {len(mixed_pallets_to_place)} pallet hỗn hợp (liên công ty) TRƯỚC khi lắp ghép...")
+                    for mixed_pallet in list(mixed_pallets_to_place):
+                        placed = False
+                        for container in sorted(final_containers, key=lambda c: c.remaining_quantity):
+                            if container.can_fit(mixed_pallet):
+                                container.add_pallet(mixed_pallet)
+                                print(f"  [+] (Xếp hỗn hợp) Đã xếp pallet hỗn hợp {mixed_pallet.id} vào container {container.id}")
+                                placed = True
+                                break 
+                        if not placed:
+                             print(f"  [-] (Chưa xếp được) Pallet hỗn hợp {mixed_pallet.id} vẫn trong danh sách chờ.")
+                             unplaced_fractional_pallets.append(mixed_pallet) # Trả lại vào danh sách nếu không có chỗ
+                # --------------------------------------------------------
 
                 # 6.2.2: Nếu vẫn còn, dùng logic lắp ghép nâng cao (xé nhỏ pallet để lấp đầy chỗ trống).
                 if unplaced_fractional_pallets:
@@ -206,14 +248,12 @@ if __name__ == "__main__":
                    
                 # 6.2.4 (MỚI): Cuối cùng, mới thử đến phương án xếp chéo (cross-ship) nếu vẫn còn.
                 if unplaced_fractional_pallets:
-   # Sửa lại để nhận 2 giá trị và truyền đủ 4 tham số
                   unplaced_fractional_pallets, container_id_counter = cross_ship_remaining_pallets(
-                  unplaced_pallets=unplaced_fractional_pallets, 
-                  containers=final_containers, 
-                  next_container_id=container_id_counter,
-                  unplaced_integer_pallets=unplaced_integer_pallets # <-- Thêm tham số này
-                 )
-                   
+                      unplaced_pallets=unplaced_fractional_pallets, 
+                      containers=final_containers, 
+                      next_container_id=container_id_counter,
+                      unplaced_integer_pallets=unplaced_integer_pallets
+                  )
 
             # === 6.3: KIỂM TRA TIẾN TRIỂN VÀ IN TRẠNG THÁI ===
             pallets_after_iteration = len(unplaced_integer_pallets) + len(unplaced_fractional_pallets)
@@ -264,6 +304,10 @@ if __name__ == "__main__":
         # Lưu ý: Hãy đảm bảo bạn đã dán toàn bộ code Logic V3 tôi gửi ở trên vào file 'data_processor.py'
         
         fully_optimized_containers = solve_waste_container_iteratively(final_containers)
+        # Sử dụng danh sách container vừa được xử lý lãng phí làm đầu vào
+        # 2. BƯỚC 6.5: GỌI HÀM TỐI ƯU HÓA CROSS-SHIP Ở ĐÂY
+        # Sử dụng danh sách container vừa được xử lý lãng phí làm đầu vào
+        fully_optimized_containers = optimize_cross_company_combination_v2(fully_optimized_containers)
         
         # ===============================================================================================
 

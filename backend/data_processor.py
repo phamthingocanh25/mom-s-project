@@ -2736,3 +2736,381 @@ def optimize_cross_company_combination(combined_pallets, uncombined_pallets, nex
     
     # Trả về các pallet mới được gộp và các pallet còn lại không thể gộp thêm
     return newly_combined_pallets, final_uncombined_pallets, next_combined_id_start
+
+def optimize_combination_relaxed_threshold(combined_pallets, uncombined_pallets, next_combined_id_start, threshold=0.95):
+    """
+    BƯỚC 5.5b (NỚI LỎNG): Thử ghép các pallet lẻ với nhau lên ngưỡng 0.95.
+    SỬA ĐỔI: CHỈ ghép các pallet lẻ còn sót lại với nhau, BỎ QUA không đụng tới 
+    các pallet đã gộp (combined_pallets) từ trước để bảo toàn cấu trúc.
+    Ưu tiên 1: Gộp trong cùng công ty.
+    Ưu tiên 2: Gộp liên công ty.
+    """
+    print(f"\n--- BẮT ĐẦU TỐI ƯU HÓA NỚI LỎNG NGƯỠNG GỘP (<= {threshold}) ---")
+    
+    # CHỈ LẤY các pallet lẻ (chưa được ghép) để xét
+    if not uncombined_pallets:
+        print("   -> Không có pallet lẻ nào để tối ưu hóa nới lỏng.")
+        return combined_pallets, uncombined_pallets, next_combined_id_start
+
+    # Sắp xếp từ lớn đến nhỏ để ưu tiên nhét pallet to trước
+    available_pallets = sorted(uncombined_pallets, key=lambda p: p.quantity, reverse=True)
+    
+    # Khởi tạo danh sách kết quả chứa sẵn các pallet đã gộp an toàn từ trước
+    final_combined_pallets = list(combined_pallets)
+    
+    def try_merge(pallets_list, require_same_company):
+        nonlocal next_combined_id_start
+        merged_this_round = []
+        unmerged_this_round = []
+        
+        while pallets_list:
+            base_pallet = pallets_list.pop(0)
+            current_sub_pallets = list(base_pallet.original_pallets) if base_pallet.is_combined else [base_pallet]
+            base_companies = set(str(p.company) for p in current_sub_pallets)
+
+            candidates = sorted(pallets_list, key=lambda p: p.quantity, reverse=True)
+            
+            for candidate in list(candidates):
+                if candidate not in pallets_list:
+                    continue
+                
+                candidate_sub_pallets = candidate.original_pallets if candidate.is_combined else [candidate]
+                candidate_companies = set(str(p.company) for p in candidate_sub_pallets)
+                
+                # Kiểm tra điều kiện cùng công ty
+                if require_same_company:
+                    if len(base_companies.union(candidate_companies)) > 1:
+                        continue
+                
+                potential_combination = current_sub_pallets + candidate_sub_pallets
+                potential_quantity = sum(p.quantity for p in potential_combination)
+                
+                # Điều kiện quan trọng: <= 0.95
+                if potential_quantity > threshold + EPSILON:
+                    continue
+                    
+                # Giữ quy tắc an toàn: tối đa 1 pallet >= 0.5 trong nhóm gộp
+                num_large_pallets = sum(1 for p in potential_combination if p.quantity >= 0.5)
+                if num_large_pallets > 1:
+                    continue
+
+                match_type = "Cùng Cty" if require_same_company else "Khác Cty"
+                print(f"  [+] ({match_type} - Ngưỡng {threshold}) Ghép nối thành công: '{base_pallet.id}' và '{candidate.id}' -> Tổng: {potential_quantity:.2f}")
+                
+                current_sub_pallets.extend(candidate_sub_pallets)
+                pallets_list.remove(candidate)
+                base_companies.update(candidate_companies)
+
+            # Nếu có sự kết hợp mới xảy ra
+            if len(current_sub_pallets) > (len(base_pallet.original_pallets) if base_pallet.is_combined else 1):
+                total_qty = sum(p.quantity for p in current_sub_pallets)
+                total_wgt = sum(p.total_weight for p in current_sub_pallets)
+                
+                all_companies = sorted(list(set(str(p.company) for p in current_sub_pallets)))
+                new_company = "+".join(all_companies) if len(all_companies) > 1 else all_companies[0]
+                
+                combined_pallet = Pallet(
+                    p_id=f"COMBINED-{next_combined_id_start}",
+                    product_code="MIXED" if len(all_companies) > 1 else current_sub_pallets[0].product_code,
+                    product_name=f"MIXED-COMPANY ({len(current_sub_pallets)} items)" if len(all_companies) > 1 else f"COMBINED ({len(current_sub_pallets)} items)",
+                    company=new_company,
+                    quantity=total_qty,
+                    weight_per_pallet=total_wgt / total_qty if total_qty > 0 else 0,
+                    box_per_pallet=sum(p.box_per_pallet for p in current_sub_pallets if p.box_per_pallet is not None)
+                )
+                combined_pallet.is_combined = True
+                combined_pallet.original_pallets = current_sub_pallets
+                combined_pallet._recalculate_from_originals()
+                merged_this_round.append(combined_pallet)
+                next_combined_id_start += 1
+            else:
+                unmerged_this_round.append(base_pallet)
+                
+        return merged_this_round, unmerged_this_round
+
+    # Giai đoạn 1: Ưu tiên cùng công ty trên tệp pallet lẻ
+    print(f"  > GIAI ĐOẠN 1: Thử ghép CÙNG CÔNG TY (Ngưỡng <= {threshold})")
+    new_combined_same, unmerged_pass_1 = try_merge(available_pallets, require_same_company=True)
+    final_combined_pallets.extend(new_combined_same)
+    
+    # Giai đoạn 2: Liên công ty cho những pallet lẻ còn rớt lại
+    print(f"  > GIAI ĐOẠN 2: Thử ghép LIÊN CÔNG TY (Ngưỡng <= {threshold})")
+    new_combined_cross, final_unmerged = try_merge(unmerged_pass_1, require_same_company=False)
+    final_combined_pallets.extend(new_combined_cross)
+    
+    # Phân loại lại kết quả cuối cùng để trả về (đảm bảo sạch sẽ)
+    final_uncombined_pallets = [p for p in final_unmerged if not p.is_combined]
+    final_combined_pallets.extend([p for p in final_unmerged if p.is_combined])
+
+    print(f"--- KẾT THÚC TỐI ƯU HÓA NỚI LỎNG ---")
+    return final_combined_pallets, final_uncombined_pallets, next_combined_id_start
+def optimize_by_splitting_and_filling_fractionals(combined_pallets, uncombined_pallets):
+    """
+    BƯỚC 5.6: TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP (Ngưỡng 0.9)
+    - Cắt lẻ tùy ý các pallet chưa gộp để trám vào các khoảng trống của pallet gộp.
+    - Điều kiện duy nhất: Tổng lượng sau khi thêm không vượt quá 0.9.
+    - Ưu tiên: Trám vào pallet gộp cùng công ty trước, sau đó mới trám chéo công ty.
+    """
+    print("\n--- BƯỚC 5.6: TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP (NGƯỠNG 0.9) ---")
+    
+    if not uncombined_pallets or not combined_pallets:
+        print("   -> Bỏ qua: Không có đủ pallet lẻ hoặc pallet gộp để thực hiện bước này.")
+        return combined_pallets, uncombined_pallets
+
+    final_uncombined = []
+    
+    # Sắp xếp pallet lẻ từ lớn đến nhỏ để xử lý
+    pallets_to_split = sorted(uncombined_pallets, key=lambda p: p.quantity, reverse=False)
+    
+    for single_pallet in pallets_to_split:
+        # Bỏ qua không cắt lẻ nếu pallet đã đạt ngưỡng >= 0.9
+        if single_pallet.quantity >= 0.9 - EPSILON:
+            print(f"  [SKIP] Giữ nguyên pallet {single_pallet.id} (qty: {single_pallet.quantity:.2f}) vì đã đạt ngưỡng >= 0.9.")
+            final_uncombined.append(single_pallet)
+            continue
+        current_piece = single_pallet
+        
+        while current_piece and current_piece.quantity > EPSILON:
+            # [SỬA ĐỔI 1] Lọc ra các pallet gộp vẫn còn không gian trống ĐÁNG KỂ (>= 0.01)
+            # Sử dụng round(..., 2) để loại bỏ triệt để sai số dấu phẩy động
+            available_targets = [cp for cp in combined_pallets if round(0.9 - cp.quantity, 2) >= 0.01]
+            
+            if not available_targets:
+                break # Đã đầy toàn bộ các pallet gộp (hoặc chỗ trống quá nhỏ), thoát vòng lặp
+            
+            # Sắp xếp mục tiêu ưu tiên:
+            def sort_key(cp):
+                companies_in_target = str(cp.company).split('+')
+                is_same_company = str(current_piece.company) in companies_in_target
+                # [SỬA ĐỔI 2] Làm tròn không gian còn lại khi sắp xếp
+                space_left = round(0.9 - cp.quantity, 2)
+                return (0 if is_same_company else 1, space_left)
+            
+            available_targets.sort(key=sort_key)
+            target_cp = available_targets[0]
+            
+            # [SỬA ĐỔI 3] Tính toán lượng cần cắt ra và làm tròn chuẩn 2 số thập phân
+            space_needed = round(0.9 - target_cp.quantity, 2)
+            split_qty = min(current_piece.quantity, space_needed)
+            split_qty = round(split_qty, 2) # Làm tròn lượng cắt
+            
+            # Nếu lượng cắt quá nhỏ (do sai số), bỏ qua
+            if split_qty < 0.01:
+                break
+                
+            is_same_company_log = str(current_piece.company) in str(target_cp.company).split('+')
+            match_type = "Cùng Cty" if is_same_company_log else "Khác Cty"
+            
+            # Để tránh sinh ra các mảnh vụn dư thừa (ví dụ 0.004 hiển thị thành 0.00)
+            if (current_piece.quantity - split_qty) < 0.01:
+                piece_to_add = current_piece
+                current_piece = None # Đã sử dụng hết mảnh này, không tạo pallet rác
+            else:
+                # Gọi hàm split có sẵn trong class Pallet.
+                current_piece, piece_to_add = current_piece.split(split_qty)
+                
+            if piece_to_add:
+                print(f"  [+] ({match_type}) Tách {piece_to_add.quantity:.2f} từ {single_pallet.id} -> Ghép vào {target_cp.id} (đang có {target_cp.quantity:.2f} -> lên {target_cp.quantity + piece_to_add.quantity:.2f})")
+                
+                # Thêm mảnh nhỏ vào pallet gộp
+                target_cp.original_pallets.append(piece_to_add)
+                target_cp._recalculate_from_originals()
+                
+                # Nếu trở thành pallet gộp đa công ty, cập nhật lại nhãn
+                all_companies = set(str(p.company) for p in target_cp.original_pallets)
+                if len(all_companies) > 1:
+                    target_cp.company = "+".join(sorted(list(all_companies)))
+                    target_cp.product_name = f"COMBINED ({len(target_cp.original_pallets)} items)"
+        # Nếu đã duyệt hết các pallet gộp nhưng mảnh này vẫn còn dư lượng
+        if current_piece and current_piece.quantity > EPSILON:
+            final_uncombined.append(current_piece)
+            
+    print(f"--- KẾT THÚC BƯỚC 5.6: Còn lại {len(final_uncombined)} pallet lẻ chưa được ghép hết. ---")
+    return combined_pallets, final_uncombined
+
+def optimize_cross_company_combination_v2(containers):
+    """
+    BƯỚC 6.5: TỐI ƯU HÓA PALLET LẪN LỘN GIỮA CÁC CÔNG TY (CROSS-SHIP OPTIMIZER)
+    Mục tiêu: Gom lượng hàng xếp chéo (cross-ship) về số lượng container tối thiểu nhất
+    thông qua logic "Dual-Constraint Validation" và "Priority Swap Loop".
+    """
+    import math
+    from collections import defaultdict
+
+    print("\n" + "="*70)
+    print("BƯỚC 6.5: TỐI ƯU HÓA PALLET LẪN LỘN GIỮA CÁC CÔNG TY (CROSS-SHIP OPTIMIZER)")
+    print("="*70)
+
+    # =========================================================================
+    # BƯỚC 1: Đánh giá Ranh giới Toàn cục (Global Boundary Check)
+    # =========================================================================
+    company_stats = defaultdict(lambda: {'qty': 0.0, 'wgt': 0.0})
+    for c in containers:
+        for p in c.pallets:
+            company_stats[str(p.company)]['qty'] += p.quantity
+            company_stats[str(p.company)]['wgt'] += p.total_weight
+
+    print("\n[BƯỚC 1] Đánh giá Ranh giới Toàn cục (Global Boundary Check):")
+    for comp, stats in company_stats.items():
+        min_conts = math.ceil(stats['qty'] / MAX_PALLETS)
+        cross_ship_qty = stats['qty'] % MAX_PALLETS
+        # Xử lý sai số dấu phẩy động
+        if abs(cross_ship_qty) < EPSILON or abs(cross_ship_qty - MAX_PALLETS) < EPSILON:
+            cross_ship_qty = 0.0
+        print(f"  - Công ty {comp}: Tổng Qty = {stats['qty']:.2f}, Wgt = {stats['wgt']:.2f}")
+        print(f"    -> Cần tối thiểu {min_conts} container. Lượng Cross-ship bắt buộc: {cross_ship_qty:.2f} Qty")
+
+    print("\n[BƯỚC 2 & 3 & 4] Phân loại, Vòng lặp Hoán đổi Ưu tiên và Validate:")
+    
+    has_changes = True
+    loop_limit = 50
+    current_loop = 0
+
+    while has_changes and current_loop < loop_limit:
+        has_changes = False
+        current_loop += 1
+        
+        for cont_B in containers:
+            # BƯỚC 2: Phân loại Pallet
+            # Tìm Pallet bị sai vị trí trong Container B (Bao gồm cả Cứng và Mềm)
+            misplaced_pallets = [p for p in cont_B.pallets if str(p.company) != str(cont_B.main_company)]
+            
+            # Ưu tiên giải cứu Rigid Pallets (is_combined) trước, sau đó đến Flexible lớn
+            misplaced_pallets.sort(key=lambda x: (1 if x.is_combined else 0, x.quantity), reverse=True)
+
+            for p_move in misplaced_pallets:
+                target_company = str(p_move.company)
+                
+                # Tìm Container A (Nơi mà Pallet này thực sự thuộc về)
+                conts_A = [c for c in containers if str(c.main_company) == target_company]
+                
+                swap_successful = False
+                
+                for cont_A in conts_A:
+                    # 1. THỬ MOVE TRỰC TIẾP TRƯỚC (Không cần Swap nếu Cont A đủ khoảng trống)
+                    new_lines_A_direct = cont_A.total_logical_pallets + p_move.logical_pallet_count
+                    new_wgt_A_direct = cont_A.total_weight + p_move.total_weight
+                    new_qty_A_direct = cont_A.total_quantity + p_move.quantity
+
+                    if (new_lines_A_direct <= MAX_PALLETS and 
+                        new_wgt_A_direct <= MAX_WEIGHT + EPSILON and 
+                        new_qty_A_direct <= MAX_PALLETS + EPSILON):
+                        
+                        print(f"  [MOVE OK] Đủ không gian trống, chuyển trực tiếp thành công:")
+                        print(f"    <- Chuyển Pallet {p_move.id} ({p_move.quantity:.2f} Qty, Cty {p_move.company}) từ Cont {cont_B.id} sang Cont {cont_A.id}")
+                        
+                        cont_B.remove_pallet(p_move)
+                        cont_A.add_pallet(p_move)
+                        
+                        cont_A._recalculate_totals()
+                        cont_B._recalculate_totals()
+                        
+                        has_changes = True
+                        swap_successful = True
+                        break
+
+                    # 2. NẾU KHÔNG THỂ MOVE TRỰC TIẾP -> TIẾN HÀNH SWAP (HOÁN ĐỔI)
+                    # BƯỚC 3: Vòng lặp Hoán đổi Ưu tiên (Priority Swap Loop)
+                    flex_candidates = [p for p in cont_A.pallets if not p.is_combined]
+                    
+                    # Ưu tiên 1: Lấy đúng Pallet của Cty B để "trả về nơi sản xuất"
+                    # Ưu tiên 2: Lấy Pallet của Cty A để dọn chỗ trống cho p_move
+                    flex_candidates.sort(key=lambda p: (0 if str(p.company) == str(cont_B.main_company) else 1, -p.quantity))
+
+                    for p_flex in flex_candidates:
+                        # TÍNH TOÁN NHÁT CẮT (The Cut): Tính toán lượng Qty cần cắt linh hoạt
+                        cut_options = set()
+                        cut_options.add(p_flex.quantity) # Option 1: Swap toàn bộ p_flex
+
+                        # Option 2: Swap 1-1 bằng đúng Qty của Rigid (NẾU p_flex đủ lớn)
+                        if p_flex.quantity >= p_move.quantity:
+                            cut_options.add(p_move.quantity)
+                        
+                        # Option 3: Cắt lượng TỐI THIỂU để cont_A đủ chỗ trống đón p_move
+                        qty_deficit = max(0.0, cont_A.total_quantity + p_move.quantity - MAX_PALLETS)
+                        wgt_deficit = max(0.0, cont_A.total_weight + p_move.total_weight - MAX_WEIGHT)
+                        qty_needed_for_wgt = wgt_deficit / p_flex.weight_per_pallet if p_flex.weight_per_pallet > EPSILON else 0
+                        min_cut = max(qty_deficit, qty_needed_for_wgt)
+                        
+                        if EPSILON < min_cut <= p_flex.quantity:
+                            cut_options.add(min_cut)
+
+                        # Thử từng option nhát cắt
+                        for qty_to_cut in sorted(list(cut_options)):
+                            if qty_to_cut < EPSILON: continue
+
+                            p_flex_keep, p_flex_move = None, None
+                            
+                            # Mô phỏng chia tách Flexible Pallet
+                            if abs(qty_to_cut - p_flex.quantity) < EPSILON:
+                                p_flex_move = p_flex
+                            else:
+                                p_flex_keep, p_flex_move = p_flex.split(qty_to_cut)
+                                if not p_flex_move: continue
+
+                            # BƯỚC 4: Chốt Ràng buộc Kép (Dual-Constraint Validation)
+                            # Test Container B Ảo (Sẽ nhận p_flex_move, mất p_move)
+                            new_lines_B = cont_B.total_logical_pallets - p_move.logical_pallet_count + p_flex_move.logical_pallet_count
+                            new_wgt_B = cont_B.total_weight - p_move.total_weight + p_flex_move.total_weight
+                            new_qty_B = cont_B.total_quantity - p_move.quantity + p_flex_move.quantity
+
+                            # Test Container A Ảo (Sẽ nhận p_move, mất p_flex gốc, giữ lại p_flex_keep)
+                            lines_A_loss = p_flex.logical_pallet_count
+                            lines_A_gain_keep = p_flex_keep.logical_pallet_count if p_flex_keep else 0
+                            new_lines_A = cont_A.total_logical_pallets - lines_A_loss + lines_A_gain_keep + p_move.logical_pallet_count
+                            
+                            new_wgt_A = cont_A.total_weight - p_flex.total_weight + (p_flex_keep.total_weight if p_flex_keep else 0) + p_move.total_weight
+                            new_qty_A = cont_A.total_quantity - p_flex.quantity + (p_flex_keep.quantity if p_flex_keep else 0) + p_move.quantity
+
+                            # KIỂM TRA MÔ PHỎNG QUA 3 BÀI TEST TẢI TRỌNG, KHỐI LƯỢNG, SỐ DÒNG
+                            is_valid_B = (new_lines_B <= MAX_PALLETS) and (new_wgt_B <= MAX_WEIGHT + EPSILON) and (new_qty_B <= MAX_PALLETS + EPSILON)
+                            is_valid_A = (new_lines_A <= MAX_PALLETS) and (new_wgt_A <= MAX_WEIGHT + EPSILON) and (new_qty_A <= MAX_PALLETS + EPSILON)
+
+                            if is_valid_A and is_valid_B:
+                                # PASS: Thực hiện hoán đổi thật (Commit)
+                                print(f"  [SWAP OK] Thực hiện hoán đổi thành công:")
+                                print(f"    <- Chuyển Pallet {p_move.id} ({p_move.quantity:.2f} Qty, Cty {p_move.company}) từ Cont {cont_B.id} sang Cont {cont_A.id}")
+                                print(f"    -> Cắt & Chuyển Flexible {p_flex_move.id} ({p_flex_move.quantity:.2f} Qty, Cty {p_flex_move.company}) từ Cont {cont_A.id} sang Cont {cont_B.id}")
+
+                                cont_B.remove_pallet(p_move)
+                                cont_A.remove_pallet(p_flex) 
+                                
+                                cont_A.add_pallet(p_move)
+                                cont_B.add_pallet(p_flex_move)
+                                if p_flex_keep:
+                                    cont_A.add_pallet(p_flex_keep) # Trả lại phần giữ lại cho Cont A
+
+                                # Đồng bộ lại tổng số
+                                cont_A._recalculate_totals()
+                                cont_B._recalculate_totals()
+                                
+                                has_changes = True
+                                swap_successful = True
+                                break # Thoát vòng lặp cut_options
+                        if swap_successful:
+                            break # Thoát vòng lặp flex_candidates
+                    if swap_successful:
+                        break # Thoát vòng lặp cont_A
+                
+                # Restart vòng lặp lớn (while loop) để dữ liệu được làm mới chuẩn nhất
+                if swap_successful:
+                    break 
+    
+    # =========================================================================
+    # BƯỚC 5: Chấp nhận Tối ưu Cục bộ (Fallback Strategy)
+    # =========================================================================
+    print("\n[BƯỚC 5] Chấp nhận Tối ưu Cục bộ (Fallback Strategy):")
+    cross_ship_count = 0
+    for c in containers:
+        mixed = [p for p in c.pallets if str(p.company) != str(c.main_company)]
+        if mixed:
+            cross_ship_count += len(mixed)
+            print(f"  - Container {c.id} (Main: {c.main_company}) vẫn đang chứa {len(mixed)} pallet khác công ty. (Chấp nhận do chạm ngưỡng Ranh giới Vật lý)")
+            
+    if cross_ship_count == 0:
+        print("  -> TUYỆT VỜI! Đã phân tách 100% các công ty thành công. Không còn lẫn lộn.")
+    else:
+        print(f"  -> Đã gom tối đa. Tổng số lượng cụm pallet cross-ship còn lại trên toàn hệ thống: {cross_ship_count}")
+
+    print("="*70)
+    return containers
