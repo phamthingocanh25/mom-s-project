@@ -2848,82 +2848,93 @@ def optimize_by_splitting_and_filling_fractionals(combined_pallets, uncombined_p
     """
     BƯỚC 5.6: TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP (Ngưỡng 0.9)
     - Cắt lẻ tùy ý các pallet chưa gộp để trám vào các khoảng trống của pallet gộp.
-    - Điều kiện duy nhất: Tổng lượng sau khi thêm không vượt quá 0.9.
-    - Ưu tiên: Trám vào pallet gộp cùng công ty trước, sau đó mới trám chéo công ty.
+    - CƠ CHẾ ALL-OR-NOTHING: Chỉ tiến hành cắt nếu có thể phân bổ được TOÀN BỘ pallet lẻ đó.
+      Nếu sau khi phân bổ nháp mà vẫn còn thừa, sẽ HỦY bỏ việc cắt và giữ nguyên pallet gốc.
     """
-    print("\n--- BƯỚC 5.6: TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP (NGƯỠNG 0.9) ---")
+    print("\n--- BƯỚC 5.6: TÁCH NHỎ PALLET LẺ ĐỂ LẤP ĐẦY PALLET GỘP (ALL-OR-NOTHING) ---")
     
     if not uncombined_pallets or not combined_pallets:
         print("   -> Bỏ qua: Không có đủ pallet lẻ hoặc pallet gộp để thực hiện bước này.")
         return combined_pallets, uncombined_pallets
 
     final_uncombined = []
-    
-    # Sắp xếp pallet lẻ từ lớn đến nhỏ để xử lý
     pallets_to_split = sorted(uncombined_pallets, key=lambda p: p.quantity, reverse=False)
     
+    # Tạo một từ điển để theo dõi không gian trống "mô phỏng" của các pallet gộp
+    # Giúp ta test thử mà không cần làm thay đổi dữ liệu thật ngay lập tức
+    available_space = {cp.id: round(0.9 - cp.quantity, 2) for cp in combined_pallets}
+    
     for single_pallet in pallets_to_split:
-        # Bỏ qua không cắt lẻ nếu pallet đã đạt ngưỡng >= 0.9
         if single_pallet.quantity >= 0.9 - EPSILON:
-            print(f"  [SKIP] Giữ nguyên pallet {single_pallet.id} (qty: {single_pallet.quantity:.2f}) vì đã đạt ngưỡng >= 0.9.")
+            print(f"  [SKIP] Giữ nguyên {single_pallet.id} (qty: {single_pallet.quantity:.2f}) vì đã đạt ngưỡng >= 0.9.")
             final_uncombined.append(single_pallet)
             continue
-        current_piece = single_pallet
+
+        current_qty_to_distribute = single_pallet.quantity
+        plan = [] # Lưu trữ kế hoạch cắt: list các tuple (target_cp, số_lượng_cắt)
         
-        while current_piece and current_piece.quantity > EPSILON:
-            # [SỬA ĐỔI 1] Lọc ra các pallet gộp vẫn còn không gian trống ĐÁNG KỂ (>= 0.01)
-            # Sử dụng round(..., 2) để loại bỏ triệt để sai số dấu phẩy động
-            available_targets = [cp for cp in combined_pallets if round(0.9 - cp.quantity, 2) >= 0.01]
-            
-            if not available_targets:
-                break # Đã đầy toàn bộ các pallet gộp (hoặc chỗ trống quá nhỏ), thoát vòng lặp
-            
-            # Sắp xếp mục tiêu ưu tiên:
-            def sort_key(cp):
-                companies_in_target = str(cp.company).split('+')
-                is_same_company = str(current_piece.company) in companies_in_target
-                # [SỬA ĐỔI 2] Làm tròn không gian còn lại khi sắp xếp
-                space_left = round(0.9 - cp.quantity, 2)
-                return (0 if is_same_company else 1, space_left)
-            
-            available_targets.sort(key=sort_key)
-            target_cp = available_targets[0]
-            
-            # [SỬA ĐỔI 3] Tính toán lượng cần cắt ra và làm tròn chuẩn 2 số thập phân
-            space_needed = round(0.9 - target_cp.quantity, 2)
-            split_qty = min(current_piece.quantity, space_needed)
-            split_qty = round(split_qty, 2) # Làm tròn lượng cắt
-            
-            # Nếu lượng cắt quá nhỏ (do sai số), bỏ qua
-            if split_qty < 0.01:
-                break
+        # 1. Lên kế hoạch (Mô phỏng)
+        # Lọc ra các pallet gộp vẫn còn không gian trống ĐÁNG KỂ (>= 0.01) dựa trên dữ liệu mô phỏng
+        valid_targets = [cp for cp in combined_pallets if available_space[cp.id] >= 0.01]
+        
+        # Sắp xếp mục tiêu ưu tiên (Cùng công ty -> Không gian trống)
+        def sort_key(cp):
+            companies_in_target = str(cp.company).split('+')
+            is_same_company = str(single_pallet.company) in companies_in_target
+            return (0 if is_same_company else 1, available_space[cp.id])
+        
+        valid_targets.sort(key=sort_key)
+        
+        for target_cp in valid_targets:
+            if current_qty_to_distribute < 0.01:
+                break # Đã phân phối xong nháp
                 
-            is_same_company_log = str(current_piece.company) in str(target_cp.company).split('+')
-            match_type = "Cùng Cty" if is_same_company_log else "Khác Cty"
+            space_needed = available_space[target_cp.id]
+            split_qty = min(current_qty_to_distribute, space_needed)
+            split_qty = round(split_qty, 2)
             
-            # Để tránh sinh ra các mảnh vụn dư thừa (ví dụ 0.004 hiển thị thành 0.00)
-            if (current_piece.quantity - split_qty) < 0.01:
-                piece_to_add = current_piece
-                current_piece = None # Đã sử dụng hết mảnh này, không tạo pallet rác
-            else:
-                # Gọi hàm split có sẵn trong class Pallet.
-                current_piece, piece_to_add = current_piece.split(split_qty)
+            if split_qty >= 0.01:
+                # Ghi nhận vào kế hoạch
+                plan.append((target_cp, split_qty))
+                # Trừ đi lượng cần phân phối
+                current_qty_to_distribute = round(current_qty_to_distribute - split_qty, 2)
+                # Trừ đi không gian trống mô phỏng của pallet gộp
+                available_space[target_cp.id] = round(available_space[target_cp.id] - split_qty, 2)
+
+        # 2. Đánh giá kế hoạch (All-or-Nothing)
+        if current_qty_to_distribute < 0.01:
+            # THÀNH CÔNG: Có thể nhét hết toàn bộ pallet này vào các lỗ hổng.
+            print(f"  [OK] Đã tìm được chỗ cho TOÀN BỘ {single_pallet.id}. Bắt đầu cắt...")
+            current_piece = single_pallet
+            
+            for target_cp, split_qty in plan:
+                is_same_company_log = str(single_pallet.company) in str(target_cp.company).split('+')
+                match_type = "Cùng Cty" if is_same_company_log else "Khác Cty"
                 
-            if piece_to_add:
-                print(f"  [+] ({match_type}) Tách {piece_to_add.quantity:.2f} từ {single_pallet.id} -> Ghép vào {target_cp.id} (đang có {target_cp.quantity:.2f} -> lên {target_cp.quantity + piece_to_add.quantity:.2f})")
-                
-                # Thêm mảnh nhỏ vào pallet gộp
-                target_cp.original_pallets.append(piece_to_add)
-                target_cp._recalculate_from_originals()
-                
-                # Nếu trở thành pallet gộp đa công ty, cập nhật lại nhãn
-                all_companies = set(str(p.company) for p in target_cp.original_pallets)
-                if len(all_companies) > 1:
-                    target_cp.company = "+".join(sorted(list(all_companies)))
-                    target_cp.product_name = f"COMBINED ({len(target_cp.original_pallets)} items)"
-        # Nếu đã duyệt hết các pallet gộp nhưng mảnh này vẫn còn dư lượng
-        if current_piece and current_piece.quantity > EPSILON:
-            final_uncombined.append(current_piece)
+                if (current_piece.quantity - split_qty) < 0.01:
+                    piece_to_add = current_piece
+                    current_piece = None # Dùng hết mảnh này
+                else:
+                    current_piece, piece_to_add = current_piece.split(split_qty)
+                    
+                if piece_to_add:
+                    print(f"    -> [+] ({match_type}) Tách {piece_to_add.quantity:.2f} từ {single_pallet.id} -> Ghép vào {target_cp.id} (lên {target_cp.quantity + piece_to_add.quantity:.2f})")
+                    
+                    target_cp.original_pallets.append(piece_to_add)
+                    target_cp._recalculate_from_originals()
+                    
+                    all_companies = set(str(p.company) for p in target_cp.original_pallets)
+                    if len(all_companies) > 1:
+                        target_cp.company = "+".join(sorted(list(all_companies)))
+                        target_cp.product_name = f"COMBINED ({len(target_cp.original_pallets)} items)"
+        else:
+            # THẤT BẠI: Vẫn còn dư, việc chia tách là vô nghĩa.
+            print(f"  [ROLLBACK] Không thể phân phối hết {single_pallet.id} (còn dư {current_qty_to_distribute:.2f}). Giữ nguyên hình dáng ban đầu: {single_pallet.quantity:.2f}")
+            final_uncombined.append(single_pallet)
+            
+            # Hoàn trả lại không gian mô phỏng (Undo) cho các pallet gộp đã bị nhét nháp ở trên
+            for target_cp, split_qty in plan:
+                available_space[target_cp.id] = round(available_space[target_cp.id] + split_qty, 2)
             
     print(f"--- KẾT THÚC BƯỚC 5.6: Còn lại {len(final_uncombined)} pallet lẻ chưa được ghép hết. ---")
     return combined_pallets, final_uncombined

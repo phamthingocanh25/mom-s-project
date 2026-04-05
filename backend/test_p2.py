@@ -64,8 +64,8 @@ def print_container_status(containers, step_name, integer_wait_list=None, fracti
 # --- HÀM MAIN ĐỂ CHẠY VÀ HIỂN THỊ KẾT QUẢ ---
 if __name__ == "__main__":
     # --- BƯỚC 1 & 2: Cấu hình và Tải dữ liệu ---Chia cont - 2025(AutoRecovered) (2).xlsx
-    file_path = "C:\\Users\\admin\\Downloads\\Check_loi.xlsx"
-    sheet_name = "Sheet1"
+    file_path = "C:\\Users\\admin\\Downloads\\Copy of Chia cont - 2025(AutoRecovered).xlsx"
+    sheet_name ="27 Mar"
     COMPANY_1 = "1"
     COMPANY_2 = "2"
     
